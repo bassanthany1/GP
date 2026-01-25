@@ -1,5 +1,5 @@
 // ============================================================
-// Large Scale Convolution + Bias Testbench
+// Large Scale Convolution + Bias Testbench (without matlab)
 // 28x28 input, 5x5 kernel, 6 output channels
 // Tests conv_bias_top with configurable ReLU
 // ============================================================
