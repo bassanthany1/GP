@@ -1,0 +1,26 @@
+frac_bits = input ('enter no.of scale fraction bits \n');
+out_frac_bits = input ('enter no.of output array fraction bits \n');
+
+%shift calculation
+shift = frac_bits - out_frac_bits;
+fprintf ('shift value = %f \n', shift);
+
+%scales input
+input_scale = input ('enter input scale \n');
+weight_scale = input ('enter weight scale \n');
+output_scale = input ('enter output scale \n');
+
+%scales calculation in Q_Format
+input_scale_Q = input_scale * 2^(frac_bits);
+output_scale_Q = output_scale * 2^(frac_bits);
+weight_scale_Q = weight_scale * 2^(frac_bits);
+
+rounded_input_scale_Q = round(input_scale_Q);
+rounded_weight_scale_Q = round(weight_scale_Q);
+rounded_output_scale_Q = round(output_scale_Q);
+
+%outputs display
+fprintf('rounded_input_scale_Q = %f\n', rounded_input_scale_Q);
+fprintf('rounded_weight_scale_Q = %f\n', rounded_weight_scale_Q);
+fprintf('rounded_output_scale_Q = %f\n', rounded_output_scale_Q);
+

@@ -1,0 +1,87 @@
+frac_bits = input ('Enter no.of fraction bits \n');
+
+in_scale = input ('\nEnter input scale \n');
+we_scale = input ('\nEnter weight scale \n');
+out_scale = input ('\nEnter output scale \n');
+
+% calculation of requantization scale
+requant_scale = (in_scale * we_scale)/ out_scale;
+fprintf ('\nrequant_scale = %f \n',requant_scale);
+Qrequant_scale = requant_scale * 2^(frac_bits);
+fprintf ('\nQ1.31 format of requantization scale = %f \n', Qrequant_scale);
+
+% rounding Q format requantization scale into the nearst integer
+rounded_Qrequant_scale = round(Qrequant_scale);
+fprintf ('\nrounded Q1.31 format of requantization scale = %f \n', rounded_Qrequant_scale);
+
+% input array
+sys_out = input('\nEnter systolic array output elements in brackets: []\n ');
+fprintf('\nsys_out = \n');
+for i = 1:size(sys_out,1)
+    fprintf('%g ', sys_out(i,:));   
+    fprintf('\n');            
+end
+
+csvwrite('F:\modelsim\graduation\sys_out.csv', sys_out);
+
+rows = size(sys_out,1);       
+C = cell(rows,1);       
+
+for i = 1:rows
+    C{i} = sys_out(i,:);      
+end
+
+% divide input array into n arrays
+for i = 1:length(C)
+    disp(['array ' num2str(i) ':']);
+    disp(C{i});
+end
+
+% output fracrion bits
+out_frac_bits = input ('\nEnter no.of output fraction bits \n ');
+
+%shift bits calculation
+shift = frac_bits - out_frac_bits;
+fprintf('\nshift value = %d\n', shift);
+
+max_val = (2^(out_frac_bits+1))-1;
+min_val = 0;
+
+for j = 1:length(C{1})        
+    for i = 1:length(C)        
+        multiplied = C{i}(j) * rounded_Qrequant_scale;  
+        shifted = bitshift(int64(multiplied) + 2^(shift-1), -shift);
+      
+
+        % saturation
+        if shifted > max_val
+            shifted = max_val;
+        elseif shifted < min_val
+            shifted = min_val;
+        end
+
+        C{i}(j) = shifted;   
+    end
+end
+
+for i = 1:length(C)
+    fprintf('\narray %d after multiplication, shift & saturation: ', i);
+    fprintf('%d ', C{i});
+    fprintf('\n');
+end
+
+% final requantization output
+requant_out = cell2mat(C);   
+
+requant_out = zeros(length(C), length(C{1}));
+
+for i = 1:length(C)
+    requant_out(i,:) = C{i};   
+end
+
+disp('Requantization output :');
+disp(requant_out);
+
+
+csvwrite('F:\modelsim\graduation\requant_out.csv', requant_out);
+
