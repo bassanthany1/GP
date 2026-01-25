@@ -1,5 +1,5 @@
 // ============================================================
-// Testbench for im2col1 module (Multiple Start Pulses)
+// Testbench for im2col1 module (without matlab files)
 // ============================================================
 
 module tb_im2col1();
@@ -194,3 +194,4 @@ module tb_im2col1();
     end
     
 endmodule
+
