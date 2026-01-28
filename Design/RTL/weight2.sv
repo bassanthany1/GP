@@ -1,3 +1,8 @@
+// ============================================================
+// weight_flatten2.sv (TRULY FIXED VERSION)
+// Generates one tile per start pulse, properly handles done_all
+// ============================================================
+
 module weight_flatten2 #(
     parameter KERNEL_SIZE   = 5,
     parameter IN_CHANNELS   = 1,
@@ -18,25 +23,17 @@ module weight_flatten2 #(
     localparam TOTAL_WEIGHTS      = OUT_CHANNELS * WEIGHTS_PER_FILTER;
     localparam NUM_TILES          = (OUT_CHANNELS + ARRAY_COLS - 1) / ARRAY_COLS;
     
-    // FSM States
-    typedef enum logic [1:0] {
-        IDLE,
-        GENERATE_TILE,
-        TILE_DONE
-    } state_t;
+    logic [$clog2(NUM_TILES+1)-1:0] tile_counter;
+    logic start_prev;
+    logic all_tiles_done;
     
-    state_t current_state, next_state;
-    
-    // Internal registers
-    logic [$clog2(NUM_TILES+1)-1:0] tile_counter, tile_counter_next;
-    logic all_tiles_done, all_tiles_done_next;
-    logic signed [DATA_WIDTH-1:0] weight_tile_next [WEIGHTS_PER_FILTER][ARRAY_COLS];
-    
-    // State register
+    // Single always_ff block
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
-            current_state <= IDLE;
             tile_counter <= 0;
+            tile_ready   <= 0;
+            done_all     <= 0;
+            start_prev   <= 0;
             all_tiles_done <= 0;
             
             // Initialize weight_tile with zeros
@@ -45,79 +42,57 @@ module weight_flatten2 #(
                     weight_tile[r][c] <= 0;
                 end
             end
-        end else begin
-            current_state <= next_state;
-            tile_counter <= tile_counter_next;
-            all_tiles_done <= all_tiles_done_next;
-            weight_tile <= weight_tile_next;
-        end
-    end
-    
-    // Next state logic
-    always_comb begin
-        // Default assignments
-        next_state = current_state;
-        tile_counter_next = tile_counter;
-        all_tiles_done_next = all_tiles_done;
-        tile_ready = 0;
-        done_all = 0;
-        weight_tile_next = weight_tile;
-        
-        case (current_state)
-            IDLE: begin
-                if (start && sram_data_valid) begin
-                    // If all tiles were done, reset counter
-                    if (all_tiles_done) begin
-                        tile_counter_next = 0;
-                        all_tiles_done_next = 0;
-                    end
-                    
-                    // Check if we have tiles to generate
-                    if (tile_counter_next < NUM_TILES) begin
-                        next_state = GENERATE_TILE;
-                    end
-                end
-            end
+        end 
+        else begin
+            start_prev <= start;
             
-            GENERATE_TILE: begin
-                // Generate current tile
-                for (int r = 0; r < WEIGHTS_PER_FILTER; r++) begin
-                    for (int c = 0; c < ARRAY_COLS; c++) begin
-                        automatic logic [$clog2(OUT_CHANNELS+1)-1:0] oc;
-                        oc = tile_counter * ARRAY_COLS + c;
-                        
-                        if (oc < OUT_CHANNELS) begin
-                            // Use weights from SRAM for valid output channels
-                            weight_tile_next[r][c] = sram_weight_data[oc * WEIGHTS_PER_FILTER + r];
-                        end else begin
-                            // Fill with zeros for padding channels
-                            weight_tile_next[r][c] = 0;
+            // Default: clear one-cycle signals
+            tile_ready <= 0;
+            done_all   <= 0;
+            
+            // Detect rising edge of start signal
+            if (start && !start_prev && sram_data_valid && !all_tiles_done) begin
+                // Generate tile at current tile_counter position
+                if (tile_counter < NUM_TILES) begin
+                    // Generate current tile
+                    for (int r = 0; r < WEIGHTS_PER_FILTER; r++) begin
+                        for (int c = 0; c < ARRAY_COLS; c++) begin
+                            automatic logic [$clog2(OUT_CHANNELS+1)-1:0] oc;
+                            oc = tile_counter * ARRAY_COLS + c;
+                            
+                            if (oc < OUT_CHANNELS) begin
+                                // Use weights from file for valid output channels
+                                weight_tile[r][c] <= sram_weight_data[oc * WEIGHTS_PER_FILTER + r];
+                            end else begin
+                                // Fill with zeros for padding channels
+                                weight_tile[r][c] <= 0;
+                            end
                         end
                     end
+                    
+                    tile_ready <= 1;
+                    
+                    // Increment counter for next time
+                    tile_counter <= tile_counter + 1;
+                    
+                    // Signal done_all ONLY on the LAST tile
+                    if (tile_counter == NUM_TILES - 1) begin
+                        done_all <= 1;
+                        all_tiles_done <= 1; // Mark all tiles as done
+                    end
                 end
-                
-                next_state = TILE_DONE;
             end
             
-            TILE_DONE: begin
-                tile_ready = 1;
-                
-                // Increment counter
-                tile_counter_next = tile_counter + 1;
-                
-                // Check if this was the last tile
-                if (tile_counter == NUM_TILES - 1) begin
-                    done_all = 1;
-                    all_tiles_done_next = 1;
+            // If we're requesting tiles beyond available data, generate zeros
+            else if (start && !start_prev && sram_data_valid && all_tiles_done) begin
+                for (int r = 0; r < WEIGHTS_PER_FILTER; r++) begin
+                    for (int c = 0; c < ARRAY_COLS; c++) begin
+                        weight_tile[r][c] <= 0;
+                    end
                 end
-                
-                next_state = IDLE;
+                tile_ready <= 1;
+                done_all <= 1;
             end
-            
-            default: begin
-                next_state = IDLE;
-            end
-        endcase
+        end
     end
-    
 endmodule
