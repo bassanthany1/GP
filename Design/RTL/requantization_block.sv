@@ -1,14 +1,14 @@
-
 module requantization_block #(
 
-	parameter in_scale = 32'd42949673, // 0.02
-	parameter we_scale = 32'd64424509, // 0.03
-	parameter out_scale =32'd21474836, // 0.01
+parameter in_scale = 32'd2147484,  // 0.001 instead of 0.02
+parameter we_scale = 32'd2147484,  // 0.001 instead of 0.03
+parameter out_scale = 32'd21474836, // 0.01
 	parameter sys_row = 2,
 	parameter sys_col = 4,
 	parameter shift = 24
 )(
 	input logic clk,
+        input logic start,
 	input logic rst,
 	input logic [31:0] sys_out [0:sys_row-1][0:sys_col-1], // systolic array output
 	output logic [7:0] requant_out [0:sys_row-1][0:sys_col-1] // array after requantization
@@ -21,7 +21,7 @@ module requantization_block #(
 
 	always_comb begin
 		temp_scale = in_scale * we_scale;    // 64-bit multiplication
-		requant_scale = (temp_scale + (out_scale>>1)) / out_scale;
+		requant_scale = (temp_scale + (out_scale>>1)) / out_scale; //(out_scale>>1) to achieve rounding 
 	end
 
 	//-------------------------------------
@@ -54,7 +54,7 @@ module requantization_block #(
 						mult_res <= 64'd0;
 						shift_res <= 32'd0;
 					end
-					else
+					else if(start) begin
 	                			//  multiplication
 						mult_res = buffer[row][c] * requant_scale; // 64-bit result
                 
@@ -71,6 +71,7 @@ module requantization_block #(
 						end
 				end
 			end
+end
 	endgenerate
 
 
