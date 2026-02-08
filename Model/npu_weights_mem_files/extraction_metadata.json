@@ -1,0 +1,186 @@
+{
+  "source_models": {
+    "fp32_model": "lenet5_model_continued_best.h5",
+    "int8_model": "lenet5_npu_int8.tflite"
+  },
+  "weights": {
+    "count": 5,
+    "format": "INT8 (hex, 2 digits per weight)",
+    "encoding": "Signed int8 converted to unsigned hex (00-FF)",
+    "layers": [
+      {
+        "index": 1,
+        "layer_number": 1,
+        "name": "tfl.pseudo_qconst1",
+        "type": "dense",
+        "shape": [
+          10,
+          84
+        ],
+        "dtype": "<class 'numpy.int8'>",
+        "num_weights": 840,
+        "filename": "npu_weights_mem_files/weights_dense1_int8.mem",
+        "min": -127,
+        "max": 102
+      },
+      {
+        "index": 2,
+        "layer_number": 2,
+        "name": "tfl.pseudo_qconst3",
+        "type": "dense",
+        "shape": [
+          84,
+          120
+        ],
+        "dtype": "<class 'numpy.int8'>",
+        "num_weights": 10080,
+        "filename": "npu_weights_mem_files/weights_dense2_int8.mem",
+        "min": -127,
+        "max": 127
+      },
+      {
+        "index": 3,
+        "layer_number": 3,
+        "name": "tfl.pseudo_qconst5",
+        "type": "dense",
+        "shape": [
+          120,
+          256
+        ],
+        "dtype": "<class 'numpy.int8'>",
+        "num_weights": 30720,
+        "filename": "npu_weights_mem_files/weights_dense3_int8.mem",
+        "min": -127,
+        "max": 127
+      },
+      {
+        "index": 4,
+        "layer_number": 1,
+        "name": "tfl.pseudo_qconst7",
+        "type": "conv",
+        "shape": [
+          16,
+          5,
+          5,
+          6
+        ],
+        "dtype": "<class 'numpy.int8'>",
+        "num_weights": 2400,
+        "filename": "npu_weights_mem_files/weights_conv1_int8.mem",
+        "min": -127,
+        "max": 127
+      },
+      {
+        "index": 5,
+        "layer_number": 2,
+        "name": "tfl.pseudo_qconst9",
+        "type": "conv",
+        "shape": [
+          6,
+          5,
+          5,
+          1
+        ],
+        "dtype": "<class 'numpy.int8'>",
+        "num_weights": 150,
+        "filename": "npu_weights_mem_files/weights_conv2_int8.mem",
+        "min": -127,
+        "max": 127
+      }
+    ]
+  },
+  "biases": {
+    "count": 5,
+    "format": "INT32 (hex, 8 digits per bias)",
+    "encoding": "Signed int32 in Q16.16 fixed-point format",
+    "scale_factor": 65536,
+    "layers": [
+      {
+        "layer_index": 1,
+        "layer_number": 1,
+        "layer_name": "conv2d_4",
+        "type": "conv",
+        "shape": [
+          6
+        ],
+        "num_biases": 6,
+        "scale_factor": 65536,
+        "filename": "npu_weights_mem_files/bias_conv1_int32.mem",
+        "fp32_min": 0.007538483943790197,
+        "fp32_max": 0.07224565744400024,
+        "int32_min": 494,
+        "int32_max": 4735
+      },
+      {
+        "layer_index": 3,
+        "layer_number": 2,
+        "layer_name": "conv2d_5",
+        "type": "conv",
+        "shape": [
+          16
+        ],
+        "num_biases": 16,
+        "scale_factor": 65536,
+        "filename": "npu_weights_mem_files/bias_conv2_int32.mem",
+        "fp32_min": -0.06685113906860352,
+        "fp32_max": 0.19940997660160065,
+        "int32_min": -4381,
+        "int32_max": 13069
+      },
+      {
+        "layer_index": 6,
+        "layer_number": 1,
+        "layer_name": "dense_6",
+        "type": "dense",
+        "shape": [
+          120
+        ],
+        "num_biases": 120,
+        "scale_factor": 65536,
+        "filename": "npu_weights_mem_files/bias_dense1_int32.mem",
+        "fp32_min": -0.32794061303138733,
+        "fp32_max": 0.3508531153202057,
+        "int32_min": -21492,
+        "int32_max": 22994
+      },
+      {
+        "layer_index": 7,
+        "layer_number": 2,
+        "layer_name": "dense_7",
+        "type": "dense",
+        "shape": [
+          84
+        ],
+        "num_biases": 84,
+        "scale_factor": 65536,
+        "filename": "npu_weights_mem_files/bias_dense2_int32.mem",
+        "fp32_min": -0.1982591599225998,
+        "fp32_max": 0.41122809052467346,
+        "int32_min": -12993,
+        "int32_max": 26950
+      },
+      {
+        "layer_index": 8,
+        "layer_number": 3,
+        "layer_name": "dense_8",
+        "type": "dense",
+        "shape": [
+          10
+        ],
+        "num_biases": 10,
+        "scale_factor": 65536,
+        "filename": "npu_weights_mem_files/bias_dense3_int32.mem",
+        "fp32_min": -0.3036041855812073,
+        "fp32_max": 0.2922007441520691,
+        "int32_min": -19897,
+        "int32_max": 19150
+      }
+    ]
+  },
+  "notes": {
+    "weight_format": "Each line in weight .mem file contains one weight in hexadecimal (2 hex digits)",
+    "bias_format": "Each line in bias .mem file contains one bias in hexadecimal (8 hex digits)",
+    "bias_scaling": "Biases scaled by 2^16 for Q16.16 fixed-point representation",
+    "weight_conversion": "INT8 weights: value >= 0 \u2192 hex, value < 0 \u2192 256 + value \u2192 hex"
+  }
+}
