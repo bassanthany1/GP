@@ -1,188 +1,257 @@
-module avg_pool_2x2 #(
-    parameter IN_CHANNELS    = 6,
-    parameter INPUT_HEIGHT   = 24,
-    parameter INPUT_WIDTH    = 24,
-    parameter TILE_ROWS      = 8,
-    parameter ARRAY_COLS     = 3,
-    parameter DATA_WIDTH     = 16,
-    parameter POOL_SIZE      = 2
+module avg_pool_2x2_banked_internal_fixed #(
+    parameter DATA_WIDTH       = 8,
+    parameter MAX_IN_CHANNELS  = 120,
+    parameter MAX_INPUT_HEIGHT = 24,
+    parameter MAX_INPUT_WIDTH  = 24
 )(
     input  logic clk,
     input  logic rst,
-    
-    // Input from bias_add_relu
-    input  logic input_valid,
-    input  logic signed [DATA_WIDTH-1:0] input_data [TILE_ROWS][ARRAY_COLS],
-    input  logic [$clog2(IN_CHANNELS)-1:0] input_channel_start,
-    input  logic [$clog2(INPUT_HEIGHT*INPUT_WIDTH)-1:0] input_window_idx_start,
-    
-    // Output interface
-    output logic output_valid,
-    output logic signed [DATA_WIDTH-1:0] output_data [TILE_ROWS][ARRAY_COLS],
-    output logic [$clog2(IN_CHANNELS)-1:0] output_channel_start,
-    output logic [$clog2((INPUT_HEIGHT/POOL_SIZE)*(INPUT_WIDTH/POOL_SIZE))-1:0] output_pooled_idx_start
+
+    // Runtime layer geometry — set by controller before start_pool
+    input logic [$clog2(MAX_IN_CHANNELS+1)-1:0]  in_channels,
+    input logic [$clog2(MAX_INPUT_HEIGHT+1)-1:0] input_height,
+    input logic [$clog2(MAX_INPUT_WIDTH+1)-1:0]  input_width,
+
+    input  logic wr_en,
+    input  logic [15:0] wr_addr,
+    input  logic signed [DATA_WIDTH-1:0] wr_data,
+
+    input  logic start_pool,
+
+    output logic rd_valid,
+    output logic signed [DATA_WIDTH-1:0] rd_data,   // 10-bit: holds -256..255 safely
+    output logic [7:0] rd_channel,
+    output logic [7:0] rd_row,
+    output logic [7:0] rd_col,
+    output logic done
 );
 
-    localparam OUT_HEIGHT = INPUT_HEIGHT / POOL_SIZE;
-    localparam OUT_WIDTH  = INPUT_WIDTH / POOL_SIZE;
-    
-    // Buffer to store conv outputs
-    logic signed [DATA_WIDTH-1:0] conv_buffer [IN_CHANNELS][INPUT_HEIGHT][INPUT_WIDTH];
-    logic conv_ready [IN_CHANNELS][INPUT_HEIGHT][INPUT_WIDTH];
-    
-    // Track which pool windows are complete
-    logic pool_window_ready [IN_CHANNELS][OUT_HEIGHT][OUT_WIDTH];
-    logic pool_window_output [IN_CHANNELS][OUT_HEIGHT][OUT_WIDTH];
-    
-    // Declare all loop variables at module level
-    integer c, h, w;
-    integer tile_r, tile_c, win_idx, ch_idx;
-    integer row_pos, col_pos;
-    integer ch, cw;
-    integer start_ch, start_h, start_w, found;
-    integer out_r, out_c, pool_idx, pool_ch;
-    integer dh, dw, conv_h, conv_w;
-    logic all_ready;
-    logic signed [DATA_WIDTH+2:0] sum;
-    
+    // =========================================================================
+    // MAX compile-time constants — used only for BRAM sizing
+    // =========================================================================
+    localparam MAX_OUT_HEIGHT   = MAX_INPUT_HEIGHT / 2;
+    localparam MAX_OUT_WIDTH    = MAX_INPUT_WIDTH  / 2;
+    localparam MAX_CHANNEL_SIZE = MAX_INPUT_HEIGHT * MAX_INPUT_WIDTH;
+    localparam MAX_TOTAL_SIZE   = MAX_IN_CHANNELS  * MAX_CHANNEL_SIZE;
+
+    // =========================================================================
+    // Runtime geometry wires
+    // =========================================================================
+    logic [$clog2(MAX_OUT_HEIGHT+1)-1:0]   out_height;
+    logic [$clog2(MAX_OUT_WIDTH+1)-1:0]    out_width;
+    logic [$clog2(MAX_CHANNEL_SIZE+1)-1:0] channel_size;
+    logic [$clog2(MAX_TOTAL_SIZE+1)-1:0]   total_size;
+
+    assign out_height  = input_height >> 1;          // input_height / 2
+    assign out_width   = input_width  >> 1;          // input_width  / 2
+    assign channel_size = input_height * input_width;
+    assign total_size   = in_channels  * channel_size;
+
+    // Registered — latched at start_pool so they stay stable during pooling run
+    logic [$clog2(MAX_IN_CHANNELS+1)-1:0]  in_channels_r;
+    logic [$clog2(MAX_INPUT_HEIGHT+1)-1:0] input_height_r;
+    logic [$clog2(MAX_INPUT_WIDTH+1)-1:0]  input_width_r;
+    logic [$clog2(MAX_OUT_HEIGHT+1)-1:0]   out_height_r;
+    logic [$clog2(MAX_OUT_WIDTH+1)-1:0]    out_width_r;
+    logic [$clog2(MAX_CHANNEL_SIZE+1)-1:0] channel_size_r;
+    logic [$clog2(MAX_TOTAL_SIZE+1)-1:0]   total_size_r;
+
+    // =========================================================================
+    // BRAM — allocated to MAX size at compile time
+    // =========================================================================
+    (* ram_style = "block" *)
+    (* ramstyle = "M20K" *)
+    (* syn_ramstyle = "block_ram" *)
+    logic signed [DATA_WIDTH-1:0] ram_flat [0:MAX_TOTAL_SIZE-1];
+
+    // =========================================================================
+    // FSM
+    // =========================================================================
+    typedef enum logic [2:0] {
+        ST_IDLE,
+        ST_RD_TL,
+        ST_RD_TR,
+        ST_RD_BL,
+        ST_RD_BR,
+        ST_OUTPUT
+    } state_t;
+
+    state_t state;
+
+    // Counter widths sized to MAX
+    logic [$clog2(MAX_IN_CHANNELS+1)-1:0]  ch_cnt,  ch_cnt_next;
+    logic [$clog2(MAX_OUT_HEIGHT+1)-1:0]   row_cnt, row_cnt_next;
+    logic [$clog2(MAX_OUT_WIDTH+1)-1:0]    col_cnt, col_cnt_next;
+
+    logic all_done;
+
+    logic signed [DATA_WIDTH-1:0] val_tl, val_tr, val_bl;
+    logic last_output_fired;
+
+    // Signed wide accumulator — prevents overflow before >>> 2
+    // DATA_WIDTH+3 bits: sign + 2 extra magnitude bits for sum of 4 values
+    logic signed [DATA_WIDTH+3:0] pool_sum;
+
+    // all_done uses runtime _r values (valid only while running)
+    assign all_done = (ch_cnt  == in_channels_r - 1) &&
+                      (row_cnt == out_height_r  - 1) &&
+                      (col_cnt == out_width_r   - 1);
+
+    // =========================================================================
+    // Write Port
+    // =========================================================================
+    always_ff @(posedge clk) begin
+        if (wr_en && wr_addr < total_size)
+            ram_flat[wr_addr] <= wr_data;
+    end
+
+    // =========================================================================
+    // Read Address Generation (combinational)
+    // =========================================================================
+    logic [15:0] rd_addr;
+    logic [15:0] spatial_offset;
+
+    always_comb begin
+        spatial_offset = 16'd0;
+        case (state)
+            ST_RD_TL: spatial_offset = 16'((row_cnt * 2)     * input_width_r + (col_cnt * 2));
+            ST_RD_TR: spatial_offset = 16'((row_cnt * 2)     * input_width_r + (col_cnt * 2) + 1);
+            ST_RD_BL: spatial_offset = 16'((row_cnt * 2 + 1) * input_width_r + (col_cnt * 2));
+            ST_RD_BR: spatial_offset = 16'((row_cnt * 2 + 1) * input_width_r + (col_cnt * 2) + 1);
+            default:  spatial_offset = 16'd0;
+        endcase
+        rd_addr = 16'(ch_cnt * channel_size_r) + spatial_offset;
+    end
+
+    logic signed [DATA_WIDTH-1:0] ram_q;
+    always_ff @(posedge clk) begin
+        if (rd_addr < total_size_r)
+            ram_q <= ram_flat[rd_addr];
+        else
+            ram_q <= '0;
+    end
+
+    // =========================================================================
+    // Counter Next-State Logic (uses runtime _r values)
+    // =========================================================================
+    always_comb begin
+        col_cnt_next = col_cnt;
+        row_cnt_next = row_cnt;
+        ch_cnt_next  = ch_cnt;
+
+        if (state == ST_OUTPUT && !all_done) begin
+            if (col_cnt == out_width_r - 1) begin
+                col_cnt_next = '0;
+                if (row_cnt == out_height_r - 1) begin
+                    row_cnt_next = '0;
+                    ch_cnt_next  = ch_cnt + 1;
+                end else begin
+                    row_cnt_next = row_cnt + 1;
+                end
+            end else begin
+                col_cnt_next = col_cnt + 1;
+            end
+        end
+    end
+
+    // =========================================================================
+    // Main FSM
+    // =========================================================================
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
-            output_valid <= 1'b0;
-            output_channel_start <= '0;
-            output_pooled_idx_start <= '0;
-            
-            for (c = 0; c < IN_CHANNELS; c = c + 1) begin
-                for (h = 0; h < INPUT_HEIGHT; h = h + 1) begin
-                    for (w = 0; w < INPUT_WIDTH; w = w + 1) begin
-                        conv_buffer[c][h][w] <= '0;
-                        conv_ready[c][h][w] <= 1'b0;
-                    end
-                end
-                for (h = 0; h < OUT_HEIGHT; h = h + 1) begin
-                    for (w = 0; w < OUT_WIDTH; w = w + 1) begin
-                        pool_window_ready[c][h][w] <= 1'b0;
-                        pool_window_output[c][h][w] <= 1'b0;
-                    end
-                end
-            end
-            
-            for (h = 0; h < TILE_ROWS; h = h + 1) begin
-                for (w = 0; w < ARRAY_COLS; w = w + 1) begin
-                    output_data[h][w] <= '0;
-                end
-            end
-            
+            state             <= ST_IDLE;
+            ch_cnt            <= '0;
+            row_cnt           <= '0;
+            col_cnt           <= '0;
+            rd_valid          <= 1'b0;
+            done              <= 1'b0;
+            rd_data           <= '0;
+            rd_channel        <= '0;
+            rd_row            <= '0;
+            rd_col            <= '0;
+            val_tl            <= '0;
+            val_tr            <= '0;
+            val_bl            <= '0;
+            last_output_fired <= 1'b0;
+            in_channels_r     <= '0;
+            input_height_r    <= '0;
+            input_width_r     <= '0;
+            out_height_r      <= '0;
+            out_width_r       <= '0;
+            channel_size_r    <= '0;
+            total_size_r      <= '0;
         end else begin
-            output_valid <= 1'b0;  // Default
-            
-            // Step 1: Store incoming conv outputs
-            if (input_valid) begin
-                for (tile_r = 0; tile_r < TILE_ROWS; tile_r = tile_r + 1) begin
-                    win_idx = input_window_idx_start + tile_r;
-                    
-                    if (win_idx < INPUT_HEIGHT * INPUT_WIDTH) begin
-                        row_pos = win_idx / INPUT_WIDTH;
-                        col_pos = win_idx % INPUT_WIDTH;
-                        
-                        for (tile_c = 0; tile_c < ARRAY_COLS; tile_c = tile_c + 1) begin
-                            ch_idx = input_channel_start + tile_c;
-                            
-                            if (ch_idx < IN_CHANNELS) begin
-                                conv_buffer[ch_idx][row_pos][col_pos] <= input_data[tile_r][tile_c];
-                                conv_ready[ch_idx][row_pos][col_pos] <= 1'b1;
-                            end
-                        end
+            rd_valid          <= 1'b0;
+            done              <= 1'b0;
+            last_output_fired <= 1'b0;
+
+            if (last_output_fired)
+                done <= 1'b1;
+
+            case (state)
+                ST_IDLE: begin
+                    if (start_pool) begin
+                        // Latch runtime geometry for this pool run
+                        in_channels_r  <= in_channels;
+                        input_height_r <= input_height;
+                        input_width_r  <= input_width;
+                        out_height_r   <= out_height;
+                        out_width_r    <= out_width;
+                        channel_size_r <= channel_size;
+                        total_size_r   <= total_size;
+                        ch_cnt         <= '0;
+                        row_cnt        <= '0;
+                        col_cnt        <= '0;
+                        state          <= ST_RD_TL;
                     end
                 end
-            end
-            
-            // Step 2: Check which pool windows are now complete
-            for (c = 0; c < IN_CHANNELS; c = c + 1) begin
-                for (h = 0; h < OUT_HEIGHT; h = h + 1) begin
-                    for (w = 0; w < OUT_WIDTH; w = w + 1) begin
-                        if (!pool_window_ready[c][h][w]) begin
-                            all_ready = 1'b1;
-                            for (ch = 0; ch < POOL_SIZE; ch = ch + 1) begin
-                                for (cw = 0; cw < POOL_SIZE; cw = cw + 1) begin
-                                    if (!conv_ready[c][h*POOL_SIZE + ch][w*POOL_SIZE + cw]) begin
-                                        all_ready = 1'b0;
-                                    end
-                                end
-                            end
-                            
-                            if (all_ready) begin
-                                pool_window_ready[c][h][w] <= 1'b1;
-                            end
-                        end
-                    end
+
+                ST_RD_TL: state <= ST_RD_TR;
+
+                ST_RD_TR: begin
+                    val_tl <= ram_q;
+                    state  <= ST_RD_BL;
                 end
-            end
-            
-            // Step 3: Generate one output tile from ready pool windows
-            // Find first unoutput pool window and generate tile starting there
-            found = 0;
-            start_ch = 0;
-            start_h = 0;
-            start_w = 0;
-            
-            // Find first ready but not yet output window
-            for (c = 0; c < IN_CHANNELS && found == 0; c = c + 1) begin
-                for (h = 0; h < OUT_HEIGHT && found == 0; h = h + 1) begin
-                    for (w = 0; w < OUT_WIDTH && found == 0; w = w + 1) begin
-                        if (pool_window_ready[c][h][w] && !pool_window_output[c][h][w]) begin
-                            found = 1;
-                            start_ch = c;
-                            start_h = h;
-                            start_w = w;
-                        end
-                    end
+
+                ST_RD_BL: begin
+                    val_tr <= ram_q;
+                    state  <= ST_RD_BR;
                 end
-            end
-            
-            if (found) begin
-                // Generate output tile starting from (start_ch, start_h, start_w)
-                output_valid <= 1'b1;
-                output_channel_start <= start_ch;
-                output_pooled_idx_start <= start_h * OUT_WIDTH + start_w;
-                
-                for (out_r = 0; out_r < TILE_ROWS; out_r = out_r + 1) begin
-                    pool_idx = start_h * OUT_WIDTH + start_w + out_r;
-                    
-                    if (pool_idx < OUT_HEIGHT * OUT_WIDTH) begin
-                        h = pool_idx / OUT_WIDTH;
-                        w = pool_idx % OUT_WIDTH;
-                        
-                        for (out_c = 0; out_c < ARRAY_COLS; out_c = out_c + 1) begin
-                            pool_ch = start_ch + out_c;
-                            
-                            if (pool_ch < IN_CHANNELS && 
-                                pool_window_ready[pool_ch][h][w] && 
-                                !pool_window_output[pool_ch][h][w]) begin
-                                
-                                // Compute average of 2x2 window
-                                sum = 0;
-                                
-                                for (dh = 0; dh < POOL_SIZE; dh = dh + 1) begin
-                                    for (dw = 0; dw < POOL_SIZE; dw = dw + 1) begin
-                                        conv_h = h * POOL_SIZE + dh;
-                                        conv_w = w * POOL_SIZE + dw;
-                                        sum = sum + conv_buffer[pool_ch][conv_h][conv_w];
-                                    end
-                                end
-                                
-                                output_data[out_r][out_c] <= sum >>> 2;
-                                pool_window_output[pool_ch][h][w] <= 1'b1;
-                            end else begin
-                                output_data[out_r][out_c] <= '0;
-                            end
-                        end
+
+                ST_RD_BR: begin
+                    val_bl <= ram_q;
+                    state  <= ST_OUTPUT;
+                end
+
+                ST_OUTPUT: begin
+                    // --------------------------------------------------------
+                    // SIGNED SUM FIX:
+                    //   pool_sum is DATA_WIDTH+4 bits wide (signed), so the
+                    //   addition of four DATA_WIDTH-bit signed values cannot
+                    //   overflow. >>> 2 is then a guaranteed arithmetic shift.
+                    // --------------------------------------------------------
+                    pool_sum = val_tl + val_tr + val_bl + ram_q;
+                    rd_data  <= pool_sum >>> 2;
+
+                    rd_channel <= 8'(ch_cnt);
+                    rd_row     <= 8'(row_cnt);
+                    rd_col     <= 8'(col_cnt);
+                    rd_valid   <= 1'b1;
+
+                    col_cnt <= col_cnt_next;
+                    row_cnt <= row_cnt_next;
+                    ch_cnt  <= ch_cnt_next;
+
+                    if (all_done) begin
+                        last_output_fired <= 1'b1;
+                        state             <= ST_IDLE;
                     end else begin
-                        for (out_c = 0; out_c < ARRAY_COLS; out_c = out_c + 1) begin
-                            output_data[out_r][out_c] <= '0;
-                        end
+                        state <= ST_RD_TL;
                     end
                 end
-            end
+
+                default: state <= ST_IDLE;
+            endcase
         end
     end
 
