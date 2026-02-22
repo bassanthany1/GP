@@ -1,262 +1,197 @@
-// ============================================================
-// Convolution Controller v2 (CORRECTED)
-// Batch processing: TILE_ROWS windows at once through systolic
-// Nested loops: Weight tiles (outer) -> Im2col tiles (inner)
-// Systolic: M=TILE_ROWS, K=WINDOW_SIZE, N=ARRAY_COLS
-// ============================================================
-
-module conv_controller_v2 #(
-    parameter KERNEL_SIZE   = 5,
-    parameter IN_CHANNELS   = 1,
-    parameter OUT_CHANNELS  = 6,
-    parameter INPUT_HEIGHT  = 28,
-    parameter INPUT_WIDTH   = 28,
-    parameter TILE_ROWS     = 8,
-    parameter ARRAY_COLS    = 3,
-    parameter DATA_WIDTH    = 8
+module conv_controller_v3 #(
+    parameter MAX_KERNEL_SIZE  = 5,
+    parameter MAX_IN_CHANNELS  = 256,
+    parameter MAX_OUT_CHANNELS = 120,
+    parameter MAX_INPUT_HEIGHT = 28,
+    parameter MAX_INPUT_WIDTH  = 28,
+    parameter TILE_ROWS        = 8,
+    parameter ARRAY_COLS       = 8,
+    parameter DATA_WIDTH       = 8
 )(
     input  logic clk,
     input  logic rst,
     input  logic start_conv,
+    input  logic fc_mode,
     output logic conv_done,
-    
-    // Interface to im2col module
+
+    input logic [$clog2(MAX_KERNEL_SIZE+1)-1:0]  kernel_size,
+    input logic [$clog2(MAX_IN_CHANNELS+1)-1:0]  in_channels,
+    input logic [$clog2(MAX_OUT_CHANNELS+1)-1:0] out_channels,
+    input logic [$clog2(MAX_INPUT_HEIGHT+1)-1:0] input_height,
+    input logic [$clog2(MAX_INPUT_WIDTH+1)-1:0]  input_width,
+
     output logic start_im2col,
     input  logic im2col_tile_ready,
-    input  logic im2col_done_all,
-    input  logic signed [DATA_WIDTH-1:0] im2col_tile_data [TILE_ROWS][KERNEL_SIZE*KERNEL_SIZE*IN_CHANNELS],
-    
-    // Interface to weight module
+    input  logic signed [DATA_WIDTH-1:0] im2col_tile_data
+                     [TILE_ROWS][MAX_KERNEL_SIZE*MAX_KERNEL_SIZE*MAX_IN_CHANNELS],
+
     output logic start_weight,
     input  logic weight_tile_ready,
-    input  logic weight_done_all,
-    input  logic signed [DATA_WIDTH-1:0] weight_tile [KERNEL_SIZE*KERNEL_SIZE*IN_CHANNELS][ARRAY_COLS],
-    
-    // Interface to systolic array (batch processing)
+    input  logic signed [DATA_WIDTH-1:0] weight_tile
+                     [MAX_KERNEL_SIZE*MAX_KERNEL_SIZE*MAX_IN_CHANNELS][ARRAY_COLS],
+
     output logic systolic_load,
     input  logic systolic_valid,
     input  logic signed [4*DATA_WIDTH-1:0] systolic_out [TILE_ROWS][ARRAY_COLS],
-    
-    // Output interface
+
     output logic output_valid,
     output logic signed [4*DATA_WIDTH-1:0] output_data [TILE_ROWS][ARRAY_COLS],
-    output logic [$clog2(OUT_CHANNELS)-1:0] output_channel_start,
-    output logic [$clog2(INPUT_HEIGHT*INPUT_WIDTH)-1:0] output_window_idx_start
+    output logic [$clog2(MAX_OUT_CHANNELS)-1:0]                 output_channel_start,
+    output logic [$clog2(MAX_INPUT_HEIGHT*MAX_INPUT_WIDTH)-1:0] output_window_idx_start
 );
 
-    localparam WINDOW_SIZE = KERNEL_SIZE * KERNEL_SIZE * IN_CHANNELS;
-    localparam OUTPUT_HEIGHT = INPUT_HEIGHT - KERNEL_SIZE + 1;
-    localparam OUTPUT_WIDTH  = INPUT_WIDTH - KERNEL_SIZE + 1;
-    localparam TOTAL_WINDOWS = OUTPUT_HEIGHT * OUTPUT_WIDTH;
-    localparam NUM_IM2COL_TILES = (TOTAL_WINDOWS + TILE_ROWS - 1) / TILE_ROWS;
-    localparam NUM_WEIGHT_TILES = (OUT_CHANNELS + ARRAY_COLS - 1) / ARRAY_COLS;
-    
-    // ========== State Machine ==========
-    typedef enum logic [3:0] {
-        IDLE,
-        START_WEIGHT,
-        WAIT_WEIGHT,
-        START_IM2COL,
-        WAIT_IM2COL,
-        LOAD_SYSTOLIC,
-        WAIT_SYSTOLIC,
-        COLLECT_OUTPUT,
-        CHECK_NEXT_IM2COL,
-        CHECK_NEXT_WEIGHT,
-        DONE
-    } state_t;
-    
-    state_t state, next_state;
-    
-    // ========== Loop Counters ==========
-    logic [$clog2(NUM_WEIGHT_TILES+1)-1:0] weight_tile_idx;
-    logic [$clog2(NUM_IM2COL_TILES+1)-1:0] im2col_tile_idx;
-    
-    // Track which weight tile and im2col tile we're on
-    logic [$clog2(OUT_CHANNELS)-1:0] current_output_channel;
-    logic [$clog2(TOTAL_WINDOWS+1)-1:0] current_window_idx_start;
-    
-    // ========== State Register ==========
-    always_ff @(posedge clk or posedge rst) begin
-        if (rst)
-            state <= IDLE;
-        else
-            state <= next_state;
-    end
-    
-    // ========== Next State Logic ==========
+    localparam MAX_WINDOW_SIZE   = MAX_KERNEL_SIZE * MAX_KERNEL_SIZE * MAX_IN_CHANNELS;
+    localparam MAX_OUT_H         = MAX_INPUT_HEIGHT - MAX_KERNEL_SIZE + 1;
+    localparam MAX_OUT_W         = MAX_INPUT_WIDTH  - MAX_KERNEL_SIZE + 1;
+    localparam MAX_TOTAL_WINDOWS = MAX_OUT_H * MAX_OUT_W;
+    localparam MAX_IM2COL_TILES  = (MAX_TOTAL_WINDOWS + TILE_ROWS - 1) / TILE_ROWS;
+    localparam MAX_WEIGHT_TILES  = (MAX_OUT_CHANNELS  + ARRAY_COLS - 1) / ARRAY_COLS;
+
+    // Runtime geometry — combinational
+    logic [$clog2(MAX_OUT_H+1)-1:0]         output_h;
+    logic [$clog2(MAX_OUT_W+1)-1:0]         output_w;
+    logic [$clog2(MAX_TOTAL_WINDOWS+1)-1:0] total_windows;
+    logic [$clog2(MAX_IM2COL_TILES+1)-1:0]  num_im2col_tiles;
+    logic [$clog2(MAX_WEIGHT_TILES+1)-1:0]  num_weight_tiles;
+
     always_comb begin
-        next_state = state;
-        
-        case (state)
-            IDLE: begin
-                if (start_conv)
-                    next_state = START_WEIGHT;
-            end
-            
-            START_WEIGHT: begin
-                next_state = WAIT_WEIGHT;
-            end
-            
-            WAIT_WEIGHT: begin
-                if (weight_tile_ready)
-                    next_state = START_IM2COL;
-            end
-            
-            START_IM2COL: begin
-                next_state = WAIT_IM2COL;
-            end
-            
-            WAIT_IM2COL: begin
-                if (im2col_tile_ready)
-                    next_state = LOAD_SYSTOLIC;
-            end
-            
-            LOAD_SYSTOLIC: begin
-                next_state = WAIT_SYSTOLIC;
-            end
-            
-            WAIT_SYSTOLIC: begin
-                if (systolic_valid)
-                    next_state = COLLECT_OUTPUT;
-            end
-            
-            COLLECT_OUTPUT: begin
-                next_state = CHECK_NEXT_IM2COL;
-            end
-            
-            CHECK_NEXT_IM2COL: begin
-                // After processing one im2col tile with current weight tile
-                if (im2col_tile_idx < NUM_IM2COL_TILES - 1)
-                    next_state = START_IM2COL;
-                else
-                    next_state = CHECK_NEXT_WEIGHT;
-            end
-            
-            CHECK_NEXT_WEIGHT: begin
-                // After processing all im2col tiles with current weight tile
-                if (weight_tile_idx < NUM_WEIGHT_TILES - 1)
-                    next_state = START_WEIGHT;
-                else
-                    next_state = DONE;
-            end
-            
-            DONE: begin
-                next_state = IDLE;
-            end
-            
-            default: next_state = IDLE;
-        endcase
+        output_h         = input_height - kernel_size + 1;
+        output_w         = input_width  - kernel_size + 1;
+        total_windows    = output_h * output_w;
+        num_im2col_tiles = (total_windows + TILE_ROWS - 1) / TILE_ROWS;
+        num_weight_tiles = (out_channels  + ARRAY_COLS - 1) / ARRAY_COLS;
     end
-    
-    // ========== Datapath ==========
+
+    // Latched at start_conv
+    logic [$clog2(MAX_TOTAL_WINDOWS+1)-1:0] total_windows_r;
+    logic [$clog2(MAX_IM2COL_TILES+1)-1:0]  num_im2col_tiles_r;
+    logic [$clog2(MAX_WEIGHT_TILES+1)-1:0]  num_weight_tiles_r;
+
+    typedef enum logic [2:0] {
+        IDLE, START_TILES, WAIT_BOTH, COMPUTE, NEXT_TILE, WAIT_IM2COL
+    } state_t;
+
+    state_t state;
+
+    logic [$clog2(MAX_WEIGHT_TILES+1)-1:0]  weight_tile_idx;
+    logic [$clog2(MAX_IM2COL_TILES+1)-1:0]  im2col_tile_idx;
+    logic [$clog2(MAX_OUT_CHANNELS)-1:0]     current_output_channel;
+    logic [$clog2(MAX_TOTAL_WINDOWS+1)-1:0]  current_window_idx_start;
+    logic weight_has_data, im2col_has_data, fc_mode_latched;
+
+    logic [$clog2(MAX_IM2COL_TILES+1)-1:0] effective_im2col_tiles;
+    always_comb
+        effective_im2col_tiles = fc_mode_latched ? 1 : num_im2col_tiles_r;
+
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
-            start_im2col        <= 0;
-            start_weight        <= 0;
-            systolic_load       <= 0;
-            output_valid        <= 0;
-            conv_done           <= 0;
-            
-            weight_tile_idx     <= 0;
-            im2col_tile_idx     <= 0;
-            current_output_channel <= 0;
-            current_window_idx_start <= 0;
-            output_channel_start <= 0;
-            output_window_idx_start <= 0;
-            
+            state                    <= IDLE;
+            fc_mode_latched          <= 1'b0;
+            start_im2col             <= 1'b0;
+            start_weight             <= 1'b0;
+            systolic_load            <= 1'b0;
+            output_valid             <= 1'b0;
+            conv_done                <= 1'b0;
+            weight_tile_idx          <= '0;
+            im2col_tile_idx          <= '0;
+            current_output_channel   <= '0;
+            current_window_idx_start <= '0;
+            output_channel_start     <= '0;
+            output_window_idx_start  <= '0;
+            weight_has_data          <= 1'b0;
+            im2col_has_data          <= 1'b0;
+            total_windows_r          <= '0;
+            num_im2col_tiles_r       <= '0;
+            num_weight_tiles_r       <= '0;
             for (int r = 0; r < TILE_ROWS; r++)
                 for (int c = 0; c < ARRAY_COLS; c++)
-                    output_data[r][c] <= 0;
-                    
+                    output_data[r][c] <= '0;
         end else begin
-            // Default values
-            start_im2col  <= 0;
-            start_weight  <= 0;
-            systolic_load <= 0;
-            output_valid  <= 0;
-            conv_done     <= 0;
-            
+            // Defaults
+            start_im2col  <= 1'b0;
+            start_weight  <= 1'b0;
+            systolic_load <= 1'b0;
+            output_valid  <= 1'b0;
+            conv_done     <= 1'b0;
+
             case (state)
+
                 IDLE: begin
                     if (start_conv) begin
-                        weight_tile_idx     <= 0;
-                        im2col_tile_idx     <= 0;
-                        current_output_channel <= 0;
-                        current_window_idx_start <= 0;
+                        fc_mode_latched    <= fc_mode;
+                        total_windows_r    <= total_windows;
+                        num_im2col_tiles_r <= num_im2col_tiles;
+                        num_weight_tiles_r <= num_weight_tiles;
+                        weight_tile_idx    <= '0;
+                        im2col_tile_idx    <= '0;
+                        weight_has_data    <= 1'b0;
+                        im2col_has_data    <= 1'b0;
+                        state              <= START_TILES;
                     end
                 end
-                
-                START_WEIGHT: begin
-                    start_weight <= 1;
+
+                START_TILES: begin
+                    start_weight <= 1'b1;
+                    start_im2col <= 1'b1;
+                    state        <= WAIT_BOTH;
                 end
-                
-                WAIT_WEIGHT: begin
+
+                WAIT_BOTH: begin
                     if (weight_tile_ready) begin
+                        weight_has_data        <= 1'b1;
                         current_output_channel <= weight_tile_idx * ARRAY_COLS;
                     end
-                end
-                
-                START_IM2COL: begin
-                    start_im2col <= 1;
-                end
-                
-                WAIT_IM2COL: begin
                     if (im2col_tile_ready) begin
-                        // Calculate starting window index for this im2col tile
+                        im2col_has_data          <= 1'b1;
                         current_window_idx_start <= im2col_tile_idx * TILE_ROWS;
                     end
-                end
-                
-                LOAD_SYSTOLIC: begin
-                    systolic_load <= 1;
-                end
-                
-                COLLECT_OUTPUT: begin
-                    output_valid <= 1;
-                    output_channel_start <= current_output_channel;
-                    output_window_idx_start <= current_window_idx_start;
-                    
-                    // Pass through entire systolic output tile
-                    for (int r = 0; r < TILE_ROWS; r++) begin
-                        for (int c = 0; c < ARRAY_COLS; c++) begin
-                            output_data[r][c] <= systolic_out[r][c];
-                        end
+                    if ((weight_has_data || weight_tile_ready) &&
+                        (im2col_has_data || im2col_tile_ready)) begin
+                        systolic_load   <= 1'b1;
+                        weight_has_data <= 1'b0;
+                        im2col_has_data <= 1'b0;
+                        state           <= COMPUTE;
                     end
                 end
-                
-                CHECK_NEXT_IM2COL: begin
-                    if (im2col_tile_idx < NUM_IM2COL_TILES - 1) begin
+
+                COMPUTE: begin
+                    if (systolic_valid) begin
+                        output_valid            <= 1'b1;
+                        output_channel_start    <= current_output_channel;
+                        output_window_idx_start <= current_window_idx_start;
+                        for (int r = 0; r < TILE_ROWS; r++)
+                            for (int c = 0; c < ARRAY_COLS; c++)
+                                output_data[r][c] <= systolic_out[r][c];
+                        state <= NEXT_TILE;
+                    end
+                end
+
+                NEXT_TILE: begin
+                    if (im2col_tile_idx < effective_im2col_tiles - 1) begin
                         im2col_tile_idx <= im2col_tile_idx + 1;
-                    end
-                end
-                
-                CHECK_NEXT_WEIGHT: begin
-                    if (weight_tile_idx < NUM_WEIGHT_TILES - 1) begin
+                        start_im2col    <= 1'b1;
+                        state           <= WAIT_IM2COL;
+                    end else if (weight_tile_idx < num_weight_tiles_r - 1) begin
                         weight_tile_idx <= weight_tile_idx + 1;
-                        im2col_tile_idx <= 0;  // Reset im2col counter for next weight tile
+                        im2col_tile_idx <= '0;
+                        state           <= START_TILES;
+                    end else begin
+                        conv_done <= 1'b1;
+                        state     <= IDLE;
                     end
                 end
-                
-                DONE: begin
-                    conv_done <= 1;
+
+                WAIT_IM2COL: begin
+                    if (im2col_tile_ready) begin
+                        current_window_idx_start <= im2col_tile_idx * TILE_ROWS;
+                        systolic_load            <= 1'b1;
+                        state                    <= COMPUTE;
+                    end
                 end
+
+                default: state <= IDLE;
             endcase
         end
-    end
-    
-    // ========== Systolic Array Input Formatter ==========
-    // Matrix A: TILE_ROWS x WINDOW_SIZE (from im2col tile)
-    // Matrix B: WINDOW_SIZE x ARRAY_COLS (weight tile)
-    logic signed [DATA_WIDTH-1:0] systolic_a [TILE_ROWS][WINDOW_SIZE];
-    logic signed [DATA_WIDTH-1:0] systolic_b [WINDOW_SIZE][ARRAY_COLS];
-    
-    always_comb begin
-        // Matrix A: Direct im2col tile data
-        systolic_a = im2col_tile_data;
-        
-        // Matrix B: Weight tile directly
-        systolic_b = weight_tile;
     end
 
 endmodule
