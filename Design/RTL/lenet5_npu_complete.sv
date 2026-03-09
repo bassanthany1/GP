@@ -29,7 +29,7 @@ module lenet5_npu_complete #(
     input logic [$clog2(MAX_INPUT_WIDTH+1)-1:0]  input_width,
 
     input logic [31:0]       requant_scale,
-    input logic [4:0]        requant_shift,
+    input logic [5:0]        requant_shift,
     input logic signed [7:0] ZP_next,
 
     input logic [$clog2(TOTAL_WEIGHTS+1)-1:0] weight_layer_offset,
@@ -44,8 +44,7 @@ module lenet5_npu_complete #(
     input logic signed [31:0]               bias_write_data,
     input logic                             bias_write_enable,
 
-    // Image SRAM (multi-port) — width unified to $clog2(TOTAL_ELEMENTS)
-    output logic [9:0] img_sram_addr [NUM_IMG_PORTS],
+    output logic [9:0]                         img_sram_addr [NUM_IMG_PORTS],
     output logic                               img_sram_read_req [NUM_IMG_PORTS],
     input  logic signed [DATA_WIDTH-1:0]       img_sram_data [NUM_IMG_PORTS],
     input  logic                               img_sram_valid [NUM_IMG_PORTS],
@@ -56,13 +55,13 @@ module lenet5_npu_complete #(
 );
 
     // =========================================================================
-    // Compile-time MAX bounds for pooling module sizing
+    // Compile-time MAX bounds
     // =========================================================================
-    localparam MAX_CONV_OUT_H  = MAX_INPUT_HEIGHT - MAX_KERNEL_SIZE + 1;
-    localparam MAX_CONV_OUT_W  = MAX_INPUT_WIDTH  - MAX_KERNEL_SIZE + 1;
-    localparam MAX_CHANNEL_SZ  = MAX_CONV_OUT_H * MAX_CONV_OUT_W;
-    localparam MAX_POOL_OUT_H  = MAX_CONV_OUT_H / 2;
-    localparam MAX_POOL_OUT_W  = MAX_CONV_OUT_W / 2;
+    localparam MAX_CONV_OUT_H = MAX_INPUT_HEIGHT - MAX_KERNEL_SIZE + 1;
+    localparam MAX_CONV_OUT_W = MAX_INPUT_WIDTH  - MAX_KERNEL_SIZE + 1;
+    localparam MAX_CHANNEL_SZ = MAX_CONV_OUT_H * MAX_CONV_OUT_W;
+    localparam MAX_POOL_OUT_H = MAX_CONV_OUT_H / 2;
+    localparam MAX_POOL_OUT_W = MAX_CONV_OUT_W / 2;
 
     // =========================================================================
     // Runtime geometry
@@ -88,20 +87,37 @@ module lenet5_npu_complete #(
     logic [$clog2(MAX_OUT_CHANNELS)-1:0]                 processor_channel_start;
     logic [$clog2(MAX_INPUT_HEIGHT*MAX_INPUT_WIDTH)-1:0] processor_window_idx_start;
 
+    logic conv_wr_en;
+    logic [15:0]       conv_wr_addr;
+    logic signed [7:0] conv_wr_data;
+
+    logic fc_wr_en;
+    logic [15:0]       fc_wr_addr;
+    logic signed [7:0] fc_wr_data;
+
     logic internal_fm_wr_en;
     logic [15:0]       internal_fm_wr_addr;
     logic signed [7:0] internal_fm_wr_data;
+
+    always_comb begin
+        if (fc_mode) begin
+            internal_fm_wr_en   = fc_wr_en;
+            internal_fm_wr_addr = fc_wr_addr;
+            internal_fm_wr_data = fc_wr_data;
+        end else begin
+            internal_fm_wr_en   = conv_wr_en;
+            internal_fm_wr_addr = conv_wr_addr;
+            internal_fm_wr_data = conv_wr_data;
+        end
+    end
 
     logic processor_done_latched;
     logic fm_write_done;
 
     logic start_pool, pool_started, pool_done, pool_valid;
-    // FIX 2: rd_data is DATA_WIDTH+1:0 from the pool module
     logic signed [DATA_WIDTH-1:0] pool_data;
     logic [7:0] pool_channel, pool_row, pool_col;
     logic [15:0] pool_out_addr;
-
-    logic [MAX_OUT_CHANNELS-1:0] fc_written_mask;
 
     // =========================================================================
     // LAYER PROCESSOR
@@ -158,49 +174,42 @@ module lenet5_npu_complete #(
     );
 
     // =========================================================================
-    // TILE WRITER FSM
+    // CONV TILE WRITER FSM  (active when fc_mode=0)
     // =========================================================================
     typedef enum logic [1:0] { WR_IDLE, WR_WRITING } wr_state_t;
     wr_state_t wr_state;
 
     logic signed [7:0] tile_buffer [TILE_ROWS][ARRAY_COLS];
-    logic [$clog2(MAX_OUT_CHANNELS)-1:0]  tile_ch_start;
-    logic [$clog2(MAX_CHANNEL_SZ)-1:0]    tile_win_start;
-    logic [$clog2(TILE_ROWS)-1:0]         wr_row;
-    logic [$clog2(ARRAY_COLS)-1:0]        wr_col;
-    logic tile_is_fc_mode;
-
+    logic [$clog2(MAX_OUT_CHANNELS)-1:0] tile_ch_start;
+    logic [$clog2(MAX_CHANNEL_SZ)-1:0]   tile_win_start;
+    logic [$clog2(TILE_ROWS)-1:0]        wr_row;
+    logic [$clog2(ARRAY_COLS)-1:0]       wr_col;
     logic [$clog2(MAX_OUT_CHANNELS+1)-1:0] out_channels_wr;
     logic [$clog2(MAX_CHANNEL_SZ+1)-1:0]   channel_size_wr;
 
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
-            wr_state            <= WR_IDLE;
-            wr_row              <= '0;
-            wr_col              <= '0;
-            internal_fm_wr_en   <= 1'b0;
-            internal_fm_wr_addr <= '0;
-            internal_fm_wr_data <= '0;
-            tile_ch_start       <= '0;
-            tile_win_start      <= '0;
-            tile_is_fc_mode     <= 1'b0;
-            fc_written_mask     <= '0;
-            out_channels_wr     <= '0;
-            channel_size_wr     <= '0;
+            wr_state        <= WR_IDLE;
+            wr_row          <= '0;
+            wr_col          <= '0;
+            conv_wr_en      <= 1'b0;
+            conv_wr_addr    <= '0;
+            conv_wr_data    <= '0;
+            tile_ch_start   <= '0;
+            tile_win_start  <= '0;
+            out_channels_wr <= '0;
+            channel_size_wr <= '0;
             for (int r = 0; r < TILE_ROWS; r++)
                 for (int c = 0; c < ARRAY_COLS; c++)
                     tile_buffer[r][c] <= '0;
         end else begin
             case (wr_state)
                 WR_IDLE: begin
-                    internal_fm_wr_en <= 1'b0;
-                    if (start_layer)
-                        fc_written_mask <= '0;
-                    if (processor_output_valid) begin
+                    conv_wr_en <= 1'b0;
+                    if (!fc_mode && processor_output_valid) begin
                         tile_buffer     <= processor_output_data;
                         tile_ch_start   <= processor_channel_start;
                         tile_win_start  <= processor_window_idx_start[$clog2(MAX_CHANNEL_SZ)-1:0];
-                        tile_is_fc_mode <= fc_mode;
                         out_channels_wr <= out_channels;
                         channel_size_wr <= channel_size;
                         wr_row          <= '0;
@@ -214,36 +223,19 @@ module lenet5_npu_complete #(
                     automatic logic [$clog2(MAX_CHANNEL_SZ)-1:0]   window_idx;
                     automatic logic [15:0] addr;
                     automatic logic valid_write;
-                    automatic logic not_duplicate;
 
-                    if (tile_is_fc_mode) begin
-                        ch_idx        = tile_ch_start + wr_col;
-                        window_idx    = '0;
-                        addr          = 16'(ch_idx);
-                        not_duplicate = (ch_idx < out_channels_wr) ?
-                                        !fc_written_mask[ch_idx] : 1'b0;
-                        valid_write   = (wr_row == 0) &&
-                                        (ch_idx < out_channels_wr) &&
-                                        not_duplicate;
-                    end else begin
-                        ch_idx        = tile_ch_start + wr_col;
-                        window_idx    = tile_win_start + wr_row;
-                        addr          = 16'(ch_idx * channel_size_wr + window_idx);
-                        valid_write   = (ch_idx < out_channels_wr) &&
-                                        (window_idx < channel_size_wr);
-                        not_duplicate = 1'b1;
-                    end
+                    ch_idx      = tile_ch_start + wr_col;
+                    window_idx  = tile_win_start + wr_row;
+                    addr        = 16'(ch_idx * channel_size_wr + window_idx);
+                    valid_write = (ch_idx < out_channels_wr) &&
+                                  (window_idx < channel_size_wr);
 
                     if (valid_write) begin
-                        internal_fm_wr_addr <= addr;
-                        internal_fm_wr_data <= tile_is_fc_mode ?
-                                               tile_buffer[0][wr_col] :
-                                               tile_buffer[wr_row][wr_col];
-                        internal_fm_wr_en   <= 1'b1;
-                        if (tile_is_fc_mode && ch_idx < out_channels_wr)
-                            fc_written_mask[ch_idx] <= 1'b1;
+                        conv_wr_addr <= addr;
+                        conv_wr_data <= tile_buffer[wr_row][wr_col];
+                        conv_wr_en   <= 1'b1;
                     end else begin
-                        internal_fm_wr_en <= 1'b0;
+                        conv_wr_en <= 1'b0;
                     end
 
                     if (wr_col == ARRAY_COLS - 1) begin
@@ -263,7 +255,128 @@ module lenet5_npu_complete #(
     end
 
     // =========================================================================
-    // fm_write_done
+    // FC OUTPUT REGISTER FILE + DRAIN FSM  (active when fc_mode=1)
+    // =========================================================================
+    logic signed [DATA_WIDTH-1:0]          fc_out_reg [MAX_OUT_CHANNELS];
+    logic [$clog2(MAX_OUT_CHANNELS+1)-1:0] fc_drain_idx;
+    logic [$clog2(MAX_OUT_CHANNELS+1)-1:0] fc_out_channels_lat;
+
+    typedef enum logic [1:0] {
+        FC_DRAIN_IDLE,
+        FC_DRAIN_WAIT,
+        FC_DRAIN_WRITE
+    } fc_drain_state_t;
+    fc_drain_state_t fc_drain_state;
+
+    // =========================================================================
+    // EXISTING: fc_drain_started flag
+    // Cleared on every start_layer, set when drain enters FC_DRAIN_WRITE.
+    // Prevents fm_write_done from asserting before drain has actually run.
+    // =========================================================================
+    logic fc_drain_started;
+
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)
+            fc_drain_started <= 1'b0;
+        else begin
+            if (start_layer)
+                fc_drain_started <= 1'b0;
+            else if (fc_drain_state == FC_DRAIN_WRITE)
+                fc_drain_started <= 1'b1;
+        end
+    end
+
+    // =========================================================================
+    // NEW FIX: fc_layer_in_progress flag
+    //
+    // Problem: when two FC layers run back-to-back, after FC layer N completes:
+    //   fc_drain_state    = FC_DRAIN_IDLE
+    //   fc_drain_started  = 1
+    //   processor_done_latched = 1
+    //   → fm_write_done glitches HIGH for 1 cycle at start of FC layer N+1
+    //     because start_layer clears the registered flags one cycle AFTER
+    //     the combinational fm_write_done is evaluated.
+    //
+    // Fix: fc_layer_in_progress is SET on the same cycle as start_layer
+    //      (registered) and CLEARED only when drain fully completes.
+    //      fm_write_done is gated by !fc_layer_in_progress so it cannot
+    //      assert while a new layer has been requested but not yet finished.
+    // =========================================================================
+    logic fc_layer_in_progress;
+
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)
+            fc_layer_in_progress <= 1'b0;
+        else begin
+            if (start_layer && fc_mode)
+                // Mark that a new FC layer has started — blocks fm_write_done
+                fc_layer_in_progress <= 1'b1;
+            else if (fc_drain_state == FC_DRAIN_IDLE && fc_drain_started)
+                // Drain has returned to IDLE after actually running → safe to clear
+                fc_layer_in_progress <= 1'b0;
+        end
+    end
+
+    // =========================================================================
+    // FC DRAIN FSM
+    // =========================================================================
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
+            fc_drain_state      <= FC_DRAIN_IDLE;
+            fc_drain_idx        <= '0;
+            fc_out_channels_lat <= '0;
+            fc_wr_en            <= 1'b0;
+            fc_wr_addr          <= '0;
+            fc_wr_data          <= '0;
+            for (int i = 0; i < MAX_OUT_CHANNELS; i++)
+                fc_out_reg[i] <= '0;
+        end else begin
+            fc_wr_en <= 1'b0;
+
+            case (fc_drain_state)
+
+                FC_DRAIN_IDLE: begin
+                    fc_drain_idx <= '0;
+                    if (start_layer && fc_mode) begin
+                        fc_out_channels_lat <= out_channels;
+                        for (int i = 0; i < MAX_OUT_CHANNELS; i++)
+                            fc_out_reg[i] <= '0;
+                        fc_drain_state <= FC_DRAIN_WAIT;
+                    end
+                end
+
+                FC_DRAIN_WAIT: begin
+                    if (processor_output_valid) begin
+                        for (int c = 0; c < ARRAY_COLS; c++) begin
+                            automatic int ch;
+                            ch = int'(processor_channel_start) + c;
+                            if (ch < int'(fc_out_channels_lat))
+                                fc_out_reg[ch] <= processor_output_data[0][c];
+                        end
+                    end
+                    if (processor_done_latched)
+                        fc_drain_state <= FC_DRAIN_WRITE;
+                end
+
+                FC_DRAIN_WRITE: begin
+                    if (fc_drain_idx < fc_out_channels_lat) begin
+                        fc_wr_en     <= 1'b1;
+                        fc_wr_addr   <= 16'(fc_drain_idx);
+                        fc_wr_data   <= fc_out_reg[fc_drain_idx];
+                        fc_drain_idx <= fc_drain_idx + 1;
+                    end else begin
+                        fc_wr_en       <= 1'b0;
+                        fc_drain_state <= FC_DRAIN_IDLE;
+                    end
+                end
+
+                default: fc_drain_state <= FC_DRAIN_IDLE;
+            endcase
+        end
+    end
+
+    // =========================================================================
+    // processor_done_latched
     // =========================================================================
     always_ff @(posedge clk or posedge rst) begin
         if (rst)
@@ -276,11 +389,27 @@ module lenet5_npu_complete #(
         end
     end
 
-    assign fm_write_done = processor_done_latched && (wr_state == WR_IDLE);
+    // =========================================================================
+    // fm_write_done
+    //
+    // Conv : processor done AND tile writer back to IDLE
+    // FC   : drain returned to IDLE AND processor done AND drain actually ran
+    //        AND fc_layer_in_progress=0 (new layer not still starting up)
+    //
+    // The fc_layer_in_progress gate is the key fix for FC→FC transitions:
+    // it holds fm_write_done LOW for the 1-cycle window between start_layer
+    // and when the registered flags (fc_drain_started, processor_done_latched)
+    // are cleared, preventing a spurious layer_done pulse.
+    // =========================================================================
+    assign fm_write_done = !fc_mode
+        ? (processor_done_latched && wr_state == WR_IDLE)
+        : (fc_drain_state == FC_DRAIN_IDLE
+           && processor_done_latched
+           && fc_drain_started
+           && !fc_layer_in_progress &&!start_layer);   // ← NEW: blocks spurious done on FC→FC
 
     // =========================================================================
-    // POOLING — gated by !fc_mode
-    // FIX 1: pass runtime geometry signals, not MAX parameters
+    // POOLING — conv mode only
     // =========================================================================
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
@@ -301,25 +430,23 @@ module lenet5_npu_complete #(
     assign pool_out_addr = 16'(pool_channel * pool_out_w * pool_out_h +
                                pool_row * pool_out_w + pool_col);
 
-    // FIX 1: MAX_* are compile-time bounds, runtime values passed as ports
     avg_pool_2x2_banked_internal_fixed #(
         .DATA_WIDTH       (DATA_WIDTH),
-        .MAX_IN_CHANNELS  (MAX_OUT_CHANNELS),   // compile-time bound
-        .MAX_INPUT_HEIGHT (MAX_CONV_OUT_H),      // compile-time bound
-        .MAX_INPUT_WIDTH  (MAX_CONV_OUT_W)       // compile-time bound
+        .MAX_IN_CHANNELS  (MAX_OUT_CHANNELS),
+        .MAX_INPUT_HEIGHT (MAX_CONV_OUT_H),
+        .MAX_INPUT_WIDTH  (MAX_CONV_OUT_W)
     ) pooling (
         .clk          (clk),
         .rst          (rst),
-        // FIX 1: runtime values passed as ports
-        .in_channels  (out_channels),            // actual channels for this layer
-        .input_height (conv_out_h),              // actual conv output height
-        .input_width  (conv_out_w),              // actual conv output width
+        .in_channels  (out_channels),
+        .input_height (conv_out_h),
+        .input_width  (conv_out_w),
         .wr_en        (internal_fm_wr_en),
         .wr_addr      (internal_fm_wr_addr),
         .wr_data      (internal_fm_wr_data),
         .start_pool   (start_pool),
         .rd_valid     (pool_valid),
-        .rd_data      (pool_data),               // signed [DATA_WIDTH+1:0]
+        .rd_data      (pool_data),
         .rd_channel   (pool_channel),
         .rd_row       (pool_row),
         .rd_col       (pool_col),
@@ -328,11 +455,10 @@ module lenet5_npu_complete #(
 
     // =========================================================================
     // OUTPUT MUX
-    // FIX 2: explicit [7:0] truncation of pool_data (safe: after /4 fits int8)
     // =========================================================================
-    assign output_valid = !fc_mode ? pool_valid        : internal_fm_wr_en;
-    assign output_addr  = !fc_mode ? pool_out_addr     : internal_fm_wr_addr;
-    assign output_data  = !fc_mode ? pool_data[7:0]    : internal_fm_wr_data;
-    assign layer_done   = !fc_mode ? pool_done         : fm_write_done;
+    assign output_valid = !fc_mode ? pool_valid     : internal_fm_wr_en;
+    assign output_addr  = !fc_mode ? pool_out_addr  : internal_fm_wr_addr;
+    assign output_data  = !fc_mode ? pool_data[7:0] : internal_fm_wr_data;
+    assign layer_done   = !fc_mode ? pool_done      : fm_write_done;
 
 endmodule
