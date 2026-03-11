@@ -1,0 +1,43 @@
+import numpy as np
+
+def read_mem_signed(filename):
+    vals = []
+    with open(filename) as f:
+        for line in f:
+            line = line.strip()
+            if not line: continue
+            v = int(line, 16)
+            if v > 127: v -= 256
+            vals.append(v)
+    return vals
+
+hw = read_mem_signed("conv2_output_hex.txt")
+sw = read_mem_signed("conv2_pool2_output.mem")
+
+print(f"Total: HW={len(hw)}  SW={len(sw)}")
+print()
+
+exact  = sum(1 for a,b in zip(hw,sw) if a==b)
+close3 = sum(1 for a,b in zip(hw,sw) if abs(a-b)<=3)
+close5 = sum(1 for a,b in zip(hw,sw) if abs(a-b)<=5)
+
+print(f"Exact match:    {exact}/256")
+print(f"Within ±3:      {close3}/256")
+print(f"Within ±5:      {close5}/256")
+print()
+
+# Side by side first 30
+print(f"{'idx':>4} {'HW':>6} {'SW':>6} {'diff':>6}")
+print("-"*25)
+for i in range(min(30, len(hw), len(sw))):
+    diff = hw[i] - sw[i]
+    mark = " ✓" if diff==0 else ""
+    print(f"{i:>4} {hw[i]:>6} {sw[i]:>6} {diff:>6}{mark}")
+
+# Error distribution
+print("\nError distribution:")
+from collections import Counter
+diffs = [abs(hw[i]-sw[i]) for i in range(min(len(hw),len(sw)))]
+dist = Counter(diffs)
+for k in sorted(dist.keys())[:15]:
+    print(f"  |diff|={k:>3}: {dist[k]:>4} outputs")
