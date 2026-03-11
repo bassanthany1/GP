@@ -1,0 +1,45 @@
+import numpy as np
+import tensorflow as tf
+
+# ---- Load image ----
+img_int8 = []
+with open("image_hex.mem", 'r') as f:
+    for line in f:
+        line = line.strip()
+        if not line: continue
+        val = int(line, 16)
+        if val > 127: val -= 256
+        img_int8.append(val)
+
+img_uint8 = (np.array(img_int8, dtype=np.int32) + 128).astype(np.uint8).reshape(1, 28, 28, 1)
+
+# Use experimental API to keep all intermediates
+interpreter = tf.lite.Interpreter(
+    model_path="lenet5_npu_int8_per_tensor.tflite",
+    experimental_preserve_all_tensors=True   # ← key flag
+)
+interpreter.allocate_tensors()
+interpreter.set_tensor(interpreter.get_input_details()[0]['index'], img_uint8)
+interpreter.invoke()
+
+
+
+# ---- FC1 output: tensor 18, [1,120] ----
+fc1_out = interpreter.get_tensor(18).flatten()      # [120]
+print(f"FC1 output: {fc1_out.size} values  min={fc1_out.min()}  max={fc1_out.max()}")
+print(f"First 8: {fc1_out[:8].tolist()}")
+with open("fc1_golden_reference.mem", 'w') as f:
+    for v in fc1_out:
+        f.write(f"{int(v) & 0xFF:02x}\n")
+print("Wrote fc1_golden_reference.mem")
+
+# ---- FC2 output: tensor 19, [1,84] ----
+fc2_out = interpreter.get_tensor(19).flatten()
+with open("fc2_golden_reference.mem", 'w') as f:
+    for v in fc2_out:
+        f.write(f"{int(v) & 0xFF:02x}\n")
+print("Wrote fc2_golden_reference.mem")
+
+# ---- Final prediction ----
+final = interpreter.get_tensor(interpreter.get_output_details()[0]['index']).flatten()
+print(f"\nTFLite predicted digit: {np.argmax(final)}")
