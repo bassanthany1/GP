@@ -40,16 +40,15 @@ module cnn_controller #(
     output logic enable_relu,
 
     output logic [31:0]       requant_scale,
-    output logic [4:0]        requant_shift,
+    output logic [5:0]        requant_shift,
     output logic signed [7:0] ZP_next,
 
     output logic [$clog2(TOTAL_WEIGHTS+1)-1:0] weight_layer_offset,
     output logic [$clog2(MAX_WEIGHTS+1)-1:0]   weight_layer_total,
     output logic [$clog2(TOTAL_BIASES+1)-1:0]  bias_layer_offset,
-    output logic [$clog2(MAX_BIASES+1)-1:0]    bias_layer_total,
+    output logic [$clog2(MAX_BIASES+1)-1:0]    bias_layer_total
 
-    output logic [15:0] fm_read_base,
-    output logic [15:0] fm_write_base
+
 );
 
     // =========================================================================
@@ -63,14 +62,12 @@ module cnn_controller #(
     logic        cfg_fc_mode  [NUM_LAYERS];
     logic        cfg_relu     [NUM_LAYERS];
     logic [31:0] cfg_rq_scale [NUM_LAYERS];
-    logic [4:0]  cfg_rq_shift [NUM_LAYERS];
+    logic [5:0]  cfg_rq_shift [NUM_LAYERS];
     logic [7:0]  cfg_zp_next  [NUM_LAYERS];
     logic [15:0] cfg_w_off    [NUM_LAYERS];
     logic [14:0] cfg_w_total  [NUM_LAYERS];
     logic [7:0]  cfg_b_off    [NUM_LAYERS];
     logic [7:0]  cfg_b_total  [NUM_LAYERS];
-    logic [15:0] cfg_fm_rd    [NUM_LAYERS];
-    logic [15:0] cfg_fm_wr    [NUM_LAYERS];
 
     always_comb begin
         // Layer 0 - C1
@@ -81,17 +78,16 @@ module cnn_controller #(
         cfg_in_w    [0] = 6'd28;
         cfg_fc_mode [0] = 1'b0;
         cfg_relu    [0] = 1'b1;
-        cfg_rq_scale[0] = 32'd4167294;
-        cfg_rq_shift[0] = 5'd24;
-        cfg_zp_next [0] = -128;
+        cfg_rq_scale[0] = 32'd2133656752;
+        cfg_rq_shift[0] = 6'd40;
+        cfg_zp_next [0] = 8'(-128);
         cfg_w_off   [0] = 16'd0;
         cfg_w_total [0] = 15'd150;
         cfg_b_off   [0] = 8'd0;
         cfg_b_total [0] = 8'd6;
-        cfg_fm_rd   [0] = 16'h0000;
-        cfg_fm_wr   [0] = 16'h0200;
+ 
 
-        // Layer 1 - C3
+        // Layer 1 - C2
         cfg_kernel  [1] = 3'd5;
         cfg_in_ch   [1] = 8'd6;
         cfg_out_ch  [1] = 8'd16;
@@ -99,15 +95,14 @@ module cnn_controller #(
         cfg_in_w    [1] = 6'd12;
         cfg_fc_mode [1] = 1'b0;
         cfg_relu    [1] = 1'b1;
-        cfg_rq_scale[1] = 32'd9202281;
-        cfg_rq_shift[1] = 5'd24;
-        cfg_zp_next [1] = -128;
+        cfg_rq_scale[1] = 32'd1177891675;
+        cfg_rq_shift[1] = 6'd38;
+        cfg_zp_next [1] = 8'(-128);
         cfg_w_off   [1] = 16'd150;
         cfg_w_total [1] = 15'd2400;
         cfg_b_off   [1] = 8'd6;
         cfg_b_total [1] = 8'd16;
-        cfg_fm_rd   [1] = 16'h0400;
-        cfg_fm_wr   [1] = 16'h0500;
+      
 
         // Layer 2 - FC1
         cfg_kernel  [2] = 3'd1;
@@ -117,15 +112,14 @@ module cnn_controller #(
         cfg_in_w    [2] = 6'd1;
         cfg_fc_mode [2] = 1'b1;
         cfg_relu    [2] = 1'b1;
-        cfg_rq_scale[2] = 32'd13855274;
-        cfg_rq_shift[2] = 5'd24;
-        cfg_zp_next [2] = -128;
+        cfg_rq_scale[2] = 32'd1773475289;
+        cfg_rq_shift[2] = 6'd38;
+        cfg_zp_next [2] = 8'(-128);
         cfg_w_off   [2] = 16'd2550;
         cfg_w_total [2] = 15'd30720;
         cfg_b_off   [2] = 8'd22;
         cfg_b_total [2] = 8'd120;
-        cfg_fm_rd   [2] = 16'h0580;
-        cfg_fm_wr   [2] = 16'h05C0;
+     
 
         // Layer 3 - FC2
         cfg_kernel  [3] = 3'd1;
@@ -135,15 +129,14 @@ module cnn_controller #(
         cfg_in_w    [3] = 6'd1;
         cfg_fc_mode [3] = 1'b1;
         cfg_relu    [3] = 1'b1;
-        cfg_rq_scale[3] = 32'd17701838;
-        cfg_rq_shift[3] = 5'd24;
-        cfg_zp_next [3] = -128;
+        cfg_rq_scale[3] = 32'd1132918009;
+        cfg_rq_shift[3] = 6'd37;
+        cfg_zp_next [3] = 8'(-128);
         cfg_w_off   [3] = 16'd33270;
         cfg_w_total [3] = 15'd10080;
         cfg_b_off   [3] = 8'd142;
         cfg_b_total [3] = 8'd84;
-        cfg_fm_rd   [3] = 16'h05C0;
-        cfg_fm_wr   [3] = 16'h05D0;
+       
 
         // Layer 4 - FC3 / Output
         cfg_kernel  [4] = 3'd1;
@@ -153,15 +146,14 @@ module cnn_controller #(
         cfg_in_w    [4] = 6'd1;
         cfg_fc_mode [4] = 1'b1;
         cfg_relu    [4] = 1'b0;
-        cfg_rq_scale[4] = 32'd12028137;
-        cfg_rq_shift[4] = 5'd24;
-        cfg_zp_next [4] = 26;
+        cfg_rq_scale[4] = 32'd1539601606;
+        cfg_rq_shift[4] = 6'd38;
+        cfg_zp_next [4] = 8'd26;
         cfg_w_off   [4] = 16'd43350;
         cfg_w_total [4] = 15'd840;
         cfg_b_off   [4] = 8'd226;
         cfg_b_total [4] = 8'd10;
-        cfg_fm_rd   [4] = 16'h05D0;
-        cfg_fm_wr   [4] = 16'h05E0;
+    
     end
 
     // =========================================================================
@@ -298,8 +290,7 @@ module cnn_controller #(
         weight_layer_total  = cfg_w_total [layer_idx];
         bias_layer_offset   = cfg_b_off   [layer_idx];
         bias_layer_total    = cfg_b_total [layer_idx];
-        fm_read_base        = cfg_fm_rd   [layer_idx];
-        fm_write_base       = cfg_fm_wr   [layer_idx];
+    
     end
 
 endmodule
