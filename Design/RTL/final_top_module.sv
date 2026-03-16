@@ -32,7 +32,7 @@ module lenet5_npu_sram_no_offset #(
 
     // Runtime requantization
     input  logic [31:0]        requant_scale,
-    input  logic [4:0]         requant_shift,
+    input  logic [5:0]         requant_shift,
     input  logic signed [7:0]  ZP_next,
 
     // Memory configuration
