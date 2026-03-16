@@ -30,7 +30,7 @@ module lenet5_layer_processor #(
     input logic [$clog2(MAX_INPUT_WIDTH+1)-1:0]  input_width,
 
     input logic [31:0]       requant_scale,
-    input logic [4:0]        requant_shift,
+    input logic [5:0]        requant_shift,
     input logic signed [7:0] ZP_next,
 
     input logic [$clog2(TOTAL_WEIGHTS+1)-1:0] weight_layer_offset,
