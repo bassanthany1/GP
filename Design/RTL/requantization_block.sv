@@ -8,7 +8,7 @@ module requantization_block #(
 
     // Runtime requantization parameters (set per layer by controller)
     input  logic [31:0]          requant_scale,
-    input  logic [4:0]           requant_shift,   // max shift = 31
+    input  logic [5:0]           requant_shift,   // max shift = 31
     input  logic signed [7:0]    ZP_next,
 
     input  logic signed [31:0] sys_out     [0:sys_row-1][0:sys_col-1],
@@ -22,7 +22,7 @@ module requantization_block #(
 
     // Latch runtime params at start time so pipeline uses consistent values
     logic [31:0]       scale_reg;
-    logic [4:0]        shift_reg;
+    logic [5:0]        shift_reg;
     logic signed [7:0] zp_reg;
 
     genvar ro, co;
@@ -63,14 +63,14 @@ module requantization_block #(
         for (row = 0; row < sys_row; row++) begin : row_loop
             for (c = 0; c < sys_col; c++) begin : col_loop
 
-                logic signed [63:0] mult_res;
-                logic signed [31:0] shift_res;
+                logic signed [64:0] mult_res;
+                logic signed [63:0] shift_res;
                 logic signed [31:0] final_res;
-
+                logic signed [63:0] round_bias;
                 always_ff @(posedge clk or posedge rst) begin
                     if (rst) begin
-                        mult_res        <= 64'd0;
-                        shift_res       <= 32'd0;
+                        mult_res        <= 65'd0;
+                        shift_res       <= 64'd0;
                         final_res       <= 32'd0;
                         requant_out[row][c] <= 8'd0;
                     end else begin
@@ -78,7 +78,10 @@ module requantization_block #(
                         mult_res <= $signed(buffer[row][c]) * $signed({1'b0, scale_reg});
 
                         // Stage 2: round-nearest right shift
-                        shift_res <= (mult_res + (64'd1 << (shift_reg - 1))) >>> shift_reg;
+                     
+round_bias = (mult_res >= 0) ? (64'sd1 << (shift_reg - 1)) 
+                              : ((64'sd1 << (shift_reg - 1)) - 64'sd1);
+shift_res <= (mult_res + round_bias) >>> shift_reg;
 
                         // Stage 3: add zero point (sign-extend ZP to 32 bits)
                         final_res <= shift_res + $signed({{24{zp_reg[7]}}, zp_reg});
