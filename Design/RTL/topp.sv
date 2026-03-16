@@ -63,7 +63,7 @@ module cnn_top #(
     logic        ctrl_fc_mode;
     logic        ctrl_enable_relu;
     logic [31:0] ctrl_requant_scale;
-    logic [4:0]  ctrl_requant_shift;
+    logic [5:0]  ctrl_requant_shift;
     logic signed [7:0] ctrl_ZP_next;
     logic [$clog2(TOTAL_WEIGHTS+1)-1:0] ctrl_weight_layer_offset;
     logic [$clog2(MAX_WEIGHTS+1)-1:0]   ctrl_weight_layer_total;
