@@ -1,6 +1,6 @@
 module requantization_block #(
-    parameter sys_row = 8,
-    parameter sys_col = 8
+    parameter sys_row = 4,
+    parameter sys_col = 4
 )(
     input  logic clk,
     input  logic rst,
@@ -16,7 +16,7 @@ module requantization_block #(
 );
 
     // =========================================================================
-    // INPUT BUFFER â latched on start
+    // INPUT BUFFER â€” latched on start
     // =========================================================================
     logic signed [31:0] buffer [0:sys_row-1][0:sys_col-1];
 
@@ -52,7 +52,7 @@ module requantization_block #(
     end
 
     // =========================================================================
-    // REQUANTIZATION PIPELINE â 4 stages per element
+    // REQUANTIZATION PIPELINE â€” 4 stages per element
     // Stage 1: multiply
     // Stage 2: round-nearest shift
     // Stage 3: add zero point
@@ -63,8 +63,8 @@ module requantization_block #(
         for (row = 0; row < sys_row; row++) begin : row_loop
             for (c = 0; c < sys_col; c++) begin : col_loop
 
-                logic signed [64:0] mult_res;
-                logic signed [63:0] shift_res;
+                logic signed [63:0] mult_res;
+                logic signed [31:0] shift_res;
                 logic signed [31:0] final_res;
                 logic signed [63:0] round_bias;
                 always_ff @(posedge clk or posedge rst) begin
