@@ -1,7 +1,7 @@
 module feature_map_sram_5port #(
     parameter DATA_WIDTH     = 8,
     parameter TOTAL_ELEMENTS = 864,
-parameter NUM_PORTS=5
+    parameter NUM_PORTS = 3
 )(
     input  logic clk,
     input  logic rst,
