@@ -1,7 +1,7 @@
 module bias_add_relu_streaming #(
     parameter MAX_OUT_CHANNELS = 120,
-    parameter TILE_ROWS        = 8,
-    parameter ARRAY_COLS       = 8,
+    parameter TILE_ROWS        = 4,
+    parameter ARRAY_COLS       = 4,
     parameter DATA_WIDTH       = 32,
     parameter BIAS_WIDTH       = 32,
     parameter MAX_BURST_LEN    = 32
@@ -46,7 +46,7 @@ module bias_add_relu_streaming #(
     logic [$clog2(1024)-1:0]            conv_window_idx_start_buf;
     logic [$clog2(MAX_OUT_CHANNELS+1)-1:0] out_channels_buf;  // latched at conv_valid
 
-    // Bias storage â only ARRAY_COLS values needed at a time
+    // Bias storage â€” only ARRAY_COLS values needed at a time
     logic signed [BIAS_WIDTH-1:0] bias_buf [ARRAY_COLS];
     logic [$clog2(ARRAY_COLS+1)-1:0] bias_count;
 
@@ -129,7 +129,7 @@ module bias_add_relu_streaming #(
                                 else
                                     output_data[r][c] <= biased;
                             end else begin
-                                // Padding column â pass through
+                                // Padding column â€” pass through
                                 output_data[r][c] <= conv_data_buf[r][c];
                             end
                         end
