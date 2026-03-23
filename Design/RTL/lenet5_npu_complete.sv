@@ -4,10 +4,10 @@ module lenet5_npu_complete #(
     parameter MAX_OUT_CHANNELS  = 120,
     parameter MAX_INPUT_HEIGHT  = 28,
     parameter MAX_INPUT_WIDTH   = 28,
-    parameter TILE_ROWS         = 8,
-    parameter ARRAY_COLS        = 8,
+    parameter TILE_ROWS         = 4,
+    parameter ARRAY_COLS        = 4,
     parameter DATA_WIDTH        = 8,
-    parameter NUM_IMG_PORTS     = 5,
+    parameter NUM_IMG_PORTS     = 3,
     parameter MAX_BURST_LEN     = 256,
     parameter MAX_WEIGHTS       = 30720,
     parameter TOTAL_WEIGHTS     = 44190,
@@ -293,7 +293,7 @@ module lenet5_npu_complete #(
     //   fc_drain_state    = FC_DRAIN_IDLE
     //   fc_drain_started  = 1
     //   processor_done_latched = 1
-    //   → fm_write_done glitches HIGH for 1 cycle at start of FC layer N+1
+    //   ? fm_write_done glitches HIGH for 1 cycle at start of FC layer N+1
     //     because start_layer clears the registered flags one cycle AFTER
     //     the combinational fm_write_done is evaluated.
     //
@@ -309,10 +309,10 @@ module lenet5_npu_complete #(
             fc_layer_in_progress <= 1'b0;
         else begin
             if (start_layer && fc_mode)
-                // Mark that a new FC layer has started — blocks fm_write_done
+                // Mark that a new FC layer has started ? blocks fm_write_done
                 fc_layer_in_progress <= 1'b1;
             else if (fc_drain_state == FC_DRAIN_IDLE && fc_drain_started)
-                // Drain has returned to IDLE after actually running → safe to clear
+                // Drain has returned to IDLE after actually running ? safe to clear
                 fc_layer_in_progress <= 1'b0;
         end
     end
@@ -396,7 +396,7 @@ module lenet5_npu_complete #(
     // FC   : drain returned to IDLE AND processor done AND drain actually ran
     //        AND fc_layer_in_progress=0 (new layer not still starting up)
     //
-    // The fc_layer_in_progress gate is the key fix for FC→FC transitions:
+    // The fc_layer_in_progress gate is the key fix for FC?FC transitions:
     // it holds fm_write_done LOW for the 1-cycle window between start_layer
     // and when the registered flags (fc_drain_started, processor_done_latched)
     // are cleared, preventing a spurious layer_done pulse.
@@ -406,10 +406,10 @@ module lenet5_npu_complete #(
         : (fc_drain_state == FC_DRAIN_IDLE
            && processor_done_latched
            && fc_drain_started
-           && !fc_layer_in_progress &&!start_layer);   // ← NEW: blocks spurious done on FC→FC
+           && !fc_layer_in_progress &&!start_layer);   // ? NEW: blocks spurious done on FC?FC
 
     // =========================================================================
-    // POOLING — conv mode only
+    // POOLING ? conv mode only
     // =========================================================================
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
