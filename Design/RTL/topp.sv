@@ -1,7 +1,13 @@
 // =============================================================================
 // cnn_top.sv
 // Wires cnn_controller <-> lenet5_npu_sram_no_offset
-// No logic — pure connectivity.
+// No logic - pure connectivity, except for the result capture and argmax.
+//
+// Output ports:
+//   predicted_digit [3:0] - binary encoding of the winning class (0..9)
+//                           e.g. digit 7 → 4'b0111
+//   result_valid          - pulses HIGH for one cycle when predicted_digit
+//                           is valid. Only fires at the last layer (FC3).
 // =============================================================================
 
 module cnn_top #(
@@ -10,17 +16,18 @@ module cnn_top #(
     parameter MAX_OUT_CHANNELS    = 120,
     parameter MAX_INPUT_HEIGHT    = 28,
     parameter MAX_INPUT_WIDTH     = 28,
-    parameter TILE_ROWS           = 8,
-    parameter ARRAY_COLS          = 8,
+    parameter TILE_ROWS           = 4,
+    parameter ARRAY_COLS          = 4,
     parameter DATA_WIDTH          = 8,
-    parameter NUM_IMG_PORTS       = 5,
+    parameter NUM_IMG_PORTS       = 3,
     parameter MAX_BURST_LEN       = 256,
     parameter MAX_WEIGHTS         = 30720,
     parameter TOTAL_WEIGHTS       = 44190,
     parameter MAX_BIASES          = 120,
     parameter TOTAL_BIASES        = 236,
     parameter SRAM_TOTAL_ELEMENTS = 1024,
-    parameter NUM_LAYERS          = 7
+    parameter NUM_LAYERS          = 5,
+    parameter NUM_CLASSES         = 10
 )(
     input  logic clk,
     input  logic rst,
@@ -41,12 +48,20 @@ module cnn_top #(
     input  logic                               bias_write_enable,
 
     // Image load
-    input  logic                                       ext_wr_en,
-    input  logic [$clog2(SRAM_TOTAL_ELEMENTS)-1:0]    ext_wr_addr,
-    input  logic signed [DATA_WIDTH-1:0]               ext_wr_data,
+    input  logic                                    ext_wr_en,
+    input  logic [$clog2(SRAM_TOTAL_ELEMENTS)-1:0] ext_wr_addr,
+    input  logic signed [DATA_WIDTH-1:0]            ext_wr_data,
 
     // Status
-    output logic sram_bank_conflict
+    output logic sram_bank_conflict,
+
+    // Classification result:
+    //   result_valid    - pulses one cycle when predicted_digit is valid
+    //   predicted_digit - 4-bit binary encoding of the winning class
+    //                     e.g. class 7 → 4'b0111
+    //                     Only updates at the last layer (FC3).
+    output logic       result_valid,
+    output logic [3:0] predicted_digit
 );
 
     // =========================================================================
@@ -69,8 +84,73 @@ module cnn_top #(
     logic [$clog2(MAX_WEIGHTS+1)-1:0]   ctrl_weight_layer_total;
     logic [$clog2(TOTAL_BIASES+1)-1:0]  ctrl_bias_layer_offset;
     logic [$clog2(MAX_BIASES+1)-1:0]    ctrl_bias_layer_total;
-    logic [15:0] ctrl_fm_read_base;
-    logic [15:0] ctrl_fm_write_base;
+
+    // =========================================================================
+    // Internal NPU output wires
+    // =========================================================================
+    logic                         npu_out_valid;
+    logic [15:0]                  npu_out_addr;
+    logic signed [DATA_WIDTH-1:0] npu_out_data;
+
+    // =========================================================================
+    // Score accumulation buffer + argmax
+    //
+    // As FC3 writes its 10 output scores one by one (addr 0..9), we track
+    // the running maximum and update predicted_digit whenever a new score
+    // beats the current best.
+    //
+    // When addr == NUM_CLASSES-1 (last score written) result_valid pulses
+    // for one cycle and predicted_digit holds the final argmax.
+    //
+    // Gated on current_layer == NUM_LAYERS-1 so FC1/FC2 outputs (which also
+    // start at addr 0) do not corrupt the result.
+    // =========================================================================
+    logic signed [DATA_WIDTH-1:0] running_max;
+    logic [3:0]                   running_best;
+
+    // True when the current output belongs to the last layer
+    wire last_layer = (current_layer == 3'(NUM_LAYERS - 1));
+
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
+            running_max     <= '1;          // most-negative signed value (0x80)
+            running_max[DATA_WIDTH-1] <= 1'b1;
+            running_best    <= 4'd0;
+            predicted_digit <= 4'd0;
+            result_valid    <= 1'b0;
+        end else begin
+            result_valid <= 1'b0;           // default: deasserted
+
+            if (start) begin
+                // Clear for new inference - reset running max to most-negative
+                running_max              <= '0;
+                running_max[DATA_WIDTH-1]<= 1'b1;   // = -128 in signed INT8
+                running_best             <= 4'd0;
+                predicted_digit          <= 4'd0;
+
+            end else if (npu_out_valid
+                         && npu_out_addr < 16'(NUM_CLASSES)
+                         && last_layer) begin
+
+                // Update running argmax whenever a new score arrives
+                if (npu_out_data > running_max) begin
+                    running_max  <= npu_out_data;
+                    running_best <= 4'(npu_out_addr);
+                end
+
+                // Last score has arrived - latch result and pulse valid
+                if (npu_out_addr == 16'(NUM_CLASSES - 1)) begin
+                    // Final check: does the last score beat the running max?
+                    if (npu_out_data > running_max)
+                        predicted_digit <= 4'(npu_out_addr);
+                    else
+                        predicted_digit <= running_best;
+
+                    result_valid <= 1'b1;
+                end
+            end
+        end
+    end
 
     // =========================================================================
     // CNN Controller
@@ -107,9 +187,7 @@ module cnn_top #(
         .weight_layer_offset  (ctrl_weight_layer_offset),
         .weight_layer_total   (ctrl_weight_layer_total),
         .bias_layer_offset    (ctrl_bias_layer_offset),
-        .bias_layer_total     (ctrl_bias_layer_total),
-        .fm_read_base         (ctrl_fm_read_base),
-        .fm_write_base        (ctrl_fm_write_base)
+        .bias_layer_total     (ctrl_bias_layer_total)
     );
 
     // =========================================================================
@@ -159,7 +237,10 @@ module cnn_top #(
         .ext_wr_en            (ext_wr_en),
         .ext_wr_addr          (ext_wr_addr),
         .ext_wr_data          (ext_wr_data),
-        .sram_bank_conflict   (sram_bank_conflict)
+        .sram_bank_conflict   (sram_bank_conflict),
+        .output_valid         (npu_out_valid),
+        .output_addr          (npu_out_addr),
+        .output_data          (npu_out_data)
     );
 
 endmodule
