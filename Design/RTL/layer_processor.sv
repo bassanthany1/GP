@@ -5,10 +5,10 @@ module lenet5_layer_processor #(
     parameter MAX_INPUT_HEIGHT  = 28,
     parameter MAX_INPUT_WIDTH   = 28,
     parameter TOTAL_ELEMENTS    = 32768,
-    parameter TILE_ROWS         = 8,
-    parameter ARRAY_COLS        = 8,
+    parameter TILE_ROWS         = 4,
+    parameter ARRAY_COLS        = 4,
     parameter DATA_WIDTH        = 8,
-    parameter NUM_IMG_PORTS     = 5,
+    parameter NUM_IMG_PORTS     = 3,
     parameter MAX_BURST_LEN     = 256,
     parameter MAX_WEIGHTS       = 30720,
     parameter TOTAL_WEIGHTS     = 44190,
@@ -46,7 +46,7 @@ module lenet5_layer_processor #(
     input logic signed [31:0]              bias_write_data,
     input logic                            bias_write_enable,
 
-    // img_sram_addr width = $clog2(TOTAL_ELEMENTS) — unified throughout hierarchy
+    // img_sram_addr width = $clog2(TOTAL_ELEMENTS) ? unified throughout hierarchy
     output logic [9:0] img_sram_addr [NUM_IMG_PORTS],
     output logic                               img_sram_read_req [NUM_IMG_PORTS],
     input  logic signed [DATA_WIDTH-1:0]       img_sram_data [NUM_IMG_PORTS],
@@ -125,7 +125,7 @@ module lenet5_layer_processor #(
 
     // =========================================================================
     // CONV + BIAS + REQUANT PIPELINE
-    // img_sram_addr uses $clog2(TOTAL_ELEMENTS) — matches hierarchy
+    // img_sram_addr uses $clog2(TOTAL_ELEMENTS) ? matches hierarchy
     // =========================================================================
     conv_bias_requant_integrated #(
         .MAX_KERNEL_SIZE  (MAX_KERNEL_SIZE),
