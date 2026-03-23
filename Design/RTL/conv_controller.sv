@@ -1,11 +1,12 @@
 module conv_controller_v3 #(
     parameter MAX_KERNEL_SIZE  = 5,
+    parameter MAX_WIN_SIZE  = 256,
     parameter MAX_IN_CHANNELS  = 256,
     parameter MAX_OUT_CHANNELS = 120,
     parameter MAX_INPUT_HEIGHT = 28,
     parameter MAX_INPUT_WIDTH  = 28,
-    parameter TILE_ROWS        = 8,
-    parameter ARRAY_COLS       = 8,
+    parameter TILE_ROWS        = 4,
+    parameter ARRAY_COLS       = 4,
     parameter DATA_WIDTH       = 8
 )(
     input  logic clk,
@@ -23,12 +24,12 @@ module conv_controller_v3 #(
     output logic start_im2col,
     input  logic im2col_tile_ready,
     input  logic signed [DATA_WIDTH-1:0] im2col_tile_data
-                     [TILE_ROWS][MAX_KERNEL_SIZE*MAX_KERNEL_SIZE*MAX_IN_CHANNELS],
+                     [TILE_ROWS][MAX_WIN_SIZE],
 
     output logic start_weight,
     input  logic weight_tile_ready,
     input  logic signed [DATA_WIDTH-1:0] weight_tile
-                     [MAX_KERNEL_SIZE*MAX_KERNEL_SIZE*MAX_IN_CHANNELS][ARRAY_COLS],
+                     [MAX_WIN_SIZE][ARRAY_COLS],
 
     output logic systolic_load,
     input  logic systolic_valid,
@@ -47,7 +48,7 @@ module conv_controller_v3 #(
     localparam MAX_IM2COL_TILES  = (MAX_TOTAL_WINDOWS + TILE_ROWS - 1) / TILE_ROWS;
     localparam MAX_WEIGHT_TILES  = (MAX_OUT_CHANNELS  + ARRAY_COLS - 1) / ARRAY_COLS;
 
-    // Runtime geometry — combinational
+    // Runtime geometry ? combinational
     logic [$clog2(MAX_OUT_H+1)-1:0]         output_h;
     logic [$clog2(MAX_OUT_W+1)-1:0]         output_w;
     logic [$clog2(MAX_TOTAL_WINDOWS+1)-1:0] total_windows;
@@ -194,4 +195,4 @@ module conv_controller_v3 #(
         end
     end
 
-endmodule
+endmodule 
