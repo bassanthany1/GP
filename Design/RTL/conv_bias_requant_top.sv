@@ -1,13 +1,14 @@
 module conv_bias_requant_integrated #(
     parameter MAX_KERNEL_SIZE   = 5,
+    parameter MAX_WIN_SIZE      = 256,
     parameter MAX_IN_CHANNELS   = 256,
     parameter MAX_OUT_CHANNELS  = 120,
     parameter MAX_INPUT_HEIGHT  = 28,
     parameter MAX_INPUT_WIDTH   = 28,
-    parameter TILE_ROWS         = 8,
-    parameter ARRAY_COLS        = 8,
+    parameter TILE_ROWS         = 4,
+    parameter ARRAY_COLS        = 4,
     parameter DATA_WIDTH        = 8,
-    parameter NUM_IMG_PORTS     = 5,
+    parameter NUM_IMG_PORTS     = 3,
     parameter MAX_BURST_LEN     = 256,
     parameter TOTAL_ELEMENTS    = 32768
 )(
@@ -36,7 +37,7 @@ module conv_bias_requant_integrated #(
     input  logic signed [DATA_WIDTH-1:0]       img_sram_data [NUM_IMG_PORTS],
     input  logic                               img_sram_valid [NUM_IMG_PORTS],
 
-    output logic [$clog2(MAX_OUT_CHANNELS*MAX_KERNEL_SIZE*MAX_KERNEL_SIZE*MAX_IN_CHANNELS)-1:0]
+    output logic [$clog2(MAX_OUT_CHANNELS*MAX_WIN_SIZE)-1:0]
                                                weight_sram_addr,
     output logic [$clog2(MAX_BURST_LEN+1)-1:0] weight_sram_burst_len,
     output logic                                weight_sram_read_req,
@@ -92,7 +93,7 @@ module conv_bias_requant_integrated #(
     logic [7:0] output_tiles_received;
     logic [7:0] drain_counter;
 
-    // Metadata shift register — 4 stages to match requant pipeline depth
+    // Metadata shift register ? 4 stages to match requant pipeline depth
     // FIX 2: meta_win width matches WIN_IDX_W, not $clog2(1024)
     logic [$clog2(MAX_OUT_CHANNELS)-1:0] meta_ch  [1:4];
     logic [WIN_IDX_W-1:0]               meta_win [1:4];
@@ -122,7 +123,7 @@ module conv_bias_requant_integrated #(
             if (output_valid)
                 output_tiles_received <= output_tiles_received + 1;
 
-            // Metadata shift register — stage 1 captures bias output timing
+            // Metadata shift register ? stage 1 captures bias output timing
             // FIX 2: zero-extend bias_window_idx_start to WIN_IDX_W bits
             meta_valid[1] <= bias_output_valid;
             meta_ch[1]    <= bias_channel_start;
@@ -269,7 +270,7 @@ module conv_bias_requant_integrated #(
     );
 
     // =========================================================================
-    // OUTPUT — requant_output is valid when output_valid fires (meta_valid[4])
+    // OUTPUT ? requant_output is valid when output_valid fires (meta_valid[4])
     // =========================================================================
     always_comb begin
         for (int r = 0; r < TILE_ROWS; r++)
