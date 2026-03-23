@@ -1,13 +1,14 @@
 module conv_top_v2_hybrid #(
     parameter MAX_KERNEL_SIZE  = 5,
+    parameter MAX_WINDOW_SIZE  = 256,
     parameter MAX_IN_CHANNELS  = 256,
     parameter MAX_OUT_CHANNELS = 120,
     parameter MAX_INPUT_HEIGHT = 28,
     parameter MAX_INPUT_WIDTH  = 28,
-    parameter TILE_ROWS        = 8,
-    parameter ARRAY_COLS       = 8,
+    parameter TILE_ROWS        = 4,
+    parameter ARRAY_COLS       = 4,
     parameter DATA_WIDTH       = 8,
-    parameter NUM_IMG_PORTS    = 5,
+    parameter NUM_IMG_PORTS    = 3,
     parameter MAX_BURST_LEN    = 256,
     parameter TOTAL_ELEMENTS   = 1024
 )(
@@ -23,34 +24,31 @@ module conv_top_v2_hybrid #(
     input logic [$clog2(MAX_INPUT_HEIGHT+1)-1:0] input_height,
     input logic [$clog2(MAX_INPUT_WIDTH+1)-1:0]  input_width,
 
-    output logic [9:0]
-                                               img_sram_addr    [NUM_IMG_PORTS],
-    output logic                               img_sram_read_req[NUM_IMG_PORTS],
-    input  logic signed [DATA_WIDTH-1:0]       img_sram_data    [NUM_IMG_PORTS],
-    input  logic                               img_sram_valid   [NUM_IMG_PORTS],
+    output logic [9:0]                                             img_sram_addr    [NUM_IMG_PORTS],
+    output logic                                                   img_sram_read_req[NUM_IMG_PORTS],
+    input  logic signed [DATA_WIDTH-1:0]                           img_sram_data    [NUM_IMG_PORTS],
+    input  logic                                                   img_sram_valid   [NUM_IMG_PORTS],
 
-    output logic [$clog2(MAX_OUT_CHANNELS*MAX_KERNEL_SIZE*
-                          MAX_KERNEL_SIZE*MAX_IN_CHANNELS)-1:0] weight_sram_addr,
-    output logic [$clog2(MAX_BURST_LEN+1)-1:0] weight_sram_burst_len,
-    output logic                                weight_sram_read_req,
-    input  logic signed [DATA_WIDTH-1:0]        weight_sram_data,
-    input  logic                                weight_sram_valid,
-    input  logic                                weight_sram_burst_done,
+    output logic [$clog2(MAX_OUT_CHANNELS*MAX_WINDOW_SIZE)-1:0]    weight_sram_addr,
+    output logic [$clog2(MAX_BURST_LEN+1)-1:0]                    weight_sram_burst_len,
+    output logic                                                   weight_sram_read_req,
+    input  logic signed [DATA_WIDTH-1:0]                           weight_sram_data,
+    input  logic                                                   weight_sram_valid,
+    input  logic                                                   weight_sram_burst_done,
 
-    // Top-level output ports unchanged — still 2D unpacked
-    output logic                                output_valid,
-    output logic signed [4*DATA_WIDTH-1:0]      output_data [TILE_ROWS][ARRAY_COLS],
-    output logic [$clog2(MAX_OUT_CHANNELS)-1:0] output_channel_start,
-    output logic [$clog2(MAX_INPUT_HEIGHT*MAX_INPUT_WIDTH)-1:0] output_window_idx_start
+    output logic                                                   output_valid,
+    output logic signed [4*DATA_WIDTH-1:0]                        output_data [TILE_ROWS][ARRAY_COLS],
+    output logic [$clog2(MAX_OUT_CHANNELS)-1:0]                    output_channel_start,
+    output logic [$clog2(MAX_INPUT_HEIGHT*MAX_INPUT_WIDTH)-1:0]    output_window_idx_start
 );
 
-    localparam MAX_WINDOW_SIZE = MAX_KERNEL_SIZE * MAX_KERNEL_SIZE * MAX_IN_CHANNELS;
-    localparam A_FLAT_W        = TILE_ROWS      * MAX_WINDOW_SIZE * DATA_WIDTH;
-    localparam B_FLAT_W        = MAX_WINDOW_SIZE * ARRAY_COLS     * DATA_WIDTH;
+    localparam A_FLAT_W = TILE_ROWS      * MAX_WINDOW_SIZE * DATA_WIDTH;
+    localparam B_FLAT_W = MAX_WINDOW_SIZE * ARRAY_COLS     * DATA_WIDTH;
+    localparam C_FLAT_W = TILE_ROWS      * ARRAY_COLS      * 4 * DATA_WIDTH;
 
-    // Flat output from systolic — unpacked internally into systolic_out
-    localparam C_FLAT_W        = TILE_ROWS * ARRAY_COLS * 4 * DATA_WIDTH;
-
+    // =========================================================================
+    // Internal signals
+    // =========================================================================
     logic start_im2col, im2col_tile_ready, im2col_done_all;
     logic signed [DATA_WIDTH-1:0] im2col_tile_data [TILE_ROWS][MAX_WINDOW_SIZE];
 
@@ -59,19 +57,22 @@ module conv_top_v2_hybrid #(
 
     logic systolic_load, systolic_valid;
 
-    // 2D unpacked internal wire — used by controller and debug probes
+    // 2D unpacked internal wire ? used by controller
     logic signed [4*DATA_WIDTH-1:0] systolic_out [TILE_ROWS][ARRAY_COLS];
 
-    // 1D packed flat wire from systolic — avoids 2D unpacked port row-swap bug
+    // 1D packed flat wire from systolic ? avoids 2D unpacked port row-swap bug
     logic signed [C_FLAT_W-1:0] c_flat;
 
-    // Unpack c_flat into systolic_out — purely combinational, no port crossing
+    // Unpack c_flat ? systolic_out (combinational, no port crossing)
     always_comb begin
         for (int r = 0; r < TILE_ROWS; r++)
             for (int n = 0; n < ARRAY_COLS; n++)
                 systolic_out[r][n] = c_flat[(r*ARRAY_COLS+n)*4*DATA_WIDTH +: 4*DATA_WIDTH];
     end
 
+    // =========================================================================
+    // window_size ? runtime computed, passed to systolic k_size port
+    // =========================================================================
     logic [$clog2(MAX_WINDOW_SIZE+1)-1:0] window_size;
     always_comb begin
         automatic int ws;
@@ -80,7 +81,9 @@ module conv_top_v2_hybrid #(
     end
 
     // =========================================================================
-    // FLAT 1D packed wires for systolic inputs
+    // FLAT 1D packed feeds into systolic ? stable from systolic_load until
+    // systolic_valid (see STABILITY INVARIANT in file header).
+    // systolic_full reads these directly; no internal copy is made.
     // =========================================================================
     logic [A_FLAT_W-1:0] a_flat;
     logic [B_FLAT_W-1:0] b_flat;
@@ -97,12 +100,13 @@ module conv_top_v2_hybrid #(
     end
 
     // =========================================================================
-    // IM2COL
+    // IM2COL ? unchanged
     // =========================================================================
     im2col1_streaming_multiport #(
         .MAX_IMG_W       (MAX_INPUT_WIDTH),
         .MAX_IMG_H       (MAX_INPUT_HEIGHT),
         .MAX_KERNEL_SIZE (MAX_KERNEL_SIZE),
+        .MAX_WIN_SIZE    (MAX_WINDOW_SIZE),
         .STRIDE          (1),
         .TILE_ROWS       (TILE_ROWS),
         .MAX_IN_CHANNELS (MAX_IN_CHANNELS),
@@ -127,7 +131,7 @@ module conv_top_v2_hybrid #(
     );
 
     // =========================================================================
-    // WEIGHT MANAGER
+    // WEIGHT MANAGER ? unchanged
     // =========================================================================
     weight_flatten2_streaming_burst #(
         .MAX_KERNEL_SIZE  (MAX_KERNEL_SIZE),
@@ -155,7 +159,7 @@ module conv_top_v2_hybrid #(
     );
 
     // =========================================================================
-    // CONTROLLER
+    // CONTROLLER ? unchanged
     // =========================================================================
     conv_controller_v3 #(
         .MAX_KERNEL_SIZE  (MAX_KERNEL_SIZE),
@@ -185,7 +189,7 @@ module conv_top_v2_hybrid #(
         .weight_tile            (weight_tile),
         .systolic_load          (systolic_load),
         .systolic_valid         (systolic_valid),
-        .systolic_out           (systolic_out),   // 2D unpacked — internal only
+        .systolic_out           (systolic_out),
         .output_valid           (output_valid),
         .output_data            (output_data),
         .output_channel_start   (output_channel_start),
@@ -193,9 +197,9 @@ module conv_top_v2_hybrid #(
     );
 
     // =========================================================================
-    // SYSTOLIC ARRAY
-    // a_flat / b_flat: 1D packed inputs (already fixed in previous version)
-    // c_flat: 1D packed output (new fix — replaces 2D unpacked c_out port)
+    // SYSTOLIC ARRAY ? Option A applied (see systolic_full module).
+    // a_flat / b_flat: held stable by controller during COMPUTE state.
+    // c_flat: 1D packed output unpacked into systolic_out above.
     // =========================================================================
     systolic_full #(
         .DATAWIDTH (DATA_WIDTH),
@@ -210,7 +214,7 @@ module conv_top_v2_hybrid #(
         .a_flat    (a_flat),
         .b_flat    (b_flat),
         .valid_out (systolic_valid),
-        .c_flat    (c_flat)        // was .c_out(systolic_out)
+        .c_flat    (c_flat)
     );
 
-endmodule
+endmodule 
