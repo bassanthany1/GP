@@ -7,7 +7,7 @@ module avg_pool_2x2_banked_internal_fixed #(
     input  logic clk,
     input  logic rst,
 
-    // Runtime layer geometry — set by controller before start_pool
+    // Runtime layer geometry ? set by controller before start_pool
     input logic [$clog2(MAX_IN_CHANNELS+1)-1:0]  in_channels,
     input logic [$clog2(MAX_INPUT_HEIGHT+1)-1:0] input_height,
     input logic [$clog2(MAX_INPUT_WIDTH+1)-1:0]  input_width,
@@ -27,7 +27,7 @@ module avg_pool_2x2_banked_internal_fixed #(
 );
 
     // =========================================================================
-    // MAX compile-time constants — used only for BRAM sizing
+    // MAX compile-time constants ? used only for BRAM sizing
     // =========================================================================
     localparam MAX_OUT_HEIGHT   = MAX_INPUT_HEIGHT / 2;
     localparam MAX_OUT_WIDTH    = MAX_INPUT_WIDTH  / 2;
@@ -47,7 +47,7 @@ module avg_pool_2x2_banked_internal_fixed #(
     assign channel_size = input_height * input_width;
     assign total_size   = in_channels  * channel_size;
 
-    // Registered — latched at start_pool so they stay stable during pooling run
+    // Registered ? latched at start_pool so they stay stable during pooling run
     logic [$clog2(MAX_IN_CHANNELS+1)-1:0]  in_channels_r;
     logic [$clog2(MAX_INPUT_HEIGHT+1)-1:0] input_height_r;
     logic [$clog2(MAX_INPUT_WIDTH+1)-1:0]  input_width_r;
@@ -57,7 +57,7 @@ module avg_pool_2x2_banked_internal_fixed #(
     logic [$clog2(MAX_TOTAL_SIZE+1)-1:0]   total_size_r;
 
     // =========================================================================
-    // BRAM — allocated to MAX size at compile time
+    // BRAM ? allocated to MAX size at compile time
     // =========================================================================
     (* ram_style = "block" *)
     (* ramstyle = "M20K" *)
@@ -88,7 +88,7 @@ module avg_pool_2x2_banked_internal_fixed #(
     logic signed [DATA_WIDTH-1:0] val_tl, val_tr, val_bl;
     logic last_output_fired;
 
-    // Signed wide accumulator — prevents overflow before >>> 2
+    // Signed wide accumulator ? prevents overflow before >>> 2
     // DATA_WIDTH+3 bits: sign + 2 extra magnitude bits for sum of 4 values
     logic signed [DATA_WIDTH+3:0] pool_sum;
 
