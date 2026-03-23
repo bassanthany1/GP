@@ -1,16 +1,18 @@
 module weight_flatten2_streaming_burst #(
     parameter MAX_KERNEL_SIZE  = 5,
+    parameter MAX_WIN_SIZE     = 256,
     parameter MAX_IN_CHANNELS  = 256,
     parameter MAX_OUT_CHANNELS = 120,
-    parameter ARRAY_COLS       = 8,
+    parameter ARRAY_COLS       = 4,
     parameter DATA_WIDTH       = 8,
-    parameter MAX_BURST_LEN    = 256
+    parameter MAX_BURST_LEN    = 256,
+    parameter MAX_WEIGHTS      = 30720 
 )(
     input  logic clk,
     input  logic rst,
     input  logic start,
 
-    // Runtime geometry — NEW
+    // Runtime geometry ? NEW
     input logic [$clog2(MAX_KERNEL_SIZE+1)-1:0]  kernel_size,
     input logic [$clog2(MAX_IN_CHANNELS+1)-1:0]  in_channels,
     input logic [$clog2(MAX_OUT_CHANNELS+1)-1:0] out_channels,
@@ -18,8 +20,7 @@ module weight_flatten2_streaming_burst #(
     output logic tile_ready,
     output logic done_all,
 
-    output logic [$clog2(MAX_OUT_CHANNELS*MAX_KERNEL_SIZE*
-                          MAX_KERNEL_SIZE*MAX_IN_CHANNELS)-1:0] sram_addr,
+    output logic [$clog2(MAX_OUT_CHANNELS*MAX_WIN_SIZE)-1:0] sram_addr,
     output logic [$clog2(MAX_BURST_LEN+1)-1:0] sram_burst_len,
     output logic sram_read_req,
     input  logic signed [DATA_WIDTH-1:0] sram_data,
@@ -27,9 +28,8 @@ module weight_flatten2_streaming_burst #(
     input  logic sram_burst_done,
 
     output logic signed [DATA_WIDTH-1:0] weight_tile
-        [MAX_KERNEL_SIZE*MAX_KERNEL_SIZE*MAX_IN_CHANNELS][ARRAY_COLS]
+        [MAX_WIN_SIZE][ARRAY_COLS]
 );
-    localparam MAX_WIN_SIZE  = MAX_KERNEL_SIZE * MAX_KERNEL_SIZE * MAX_IN_CHANNELS;
     localparam MAX_NUM_TILES = (MAX_OUT_CHANNELS + ARRAY_COLS - 1) / ARRAY_COLS;
 
     // Runtime geometry
@@ -101,7 +101,7 @@ module weight_flatten2_streaming_burst #(
                         burst_count    <= 0;
                         state          <= RECEIVING_BURST;
                     end else begin
-                        // Padding column — zero fill
+                        // Padding column ? zero fill
                         for (int r = 0; r < MAX_WIN_SIZE; r++)
                             weight_tile[r][current_col] <= 0;
                         if (current_col == ARRAY_COLS - 1)
@@ -140,7 +140,3 @@ module weight_flatten2_streaming_burst #(
             endcase
         end
     end
-
-    assign done_all = tile_ready && (tile_counter == num_tiles_lat - 1);
-
-endmodule
