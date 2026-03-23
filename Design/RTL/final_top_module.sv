@@ -4,10 +4,10 @@ module lenet5_npu_sram_no_offset #(
     parameter MAX_OUT_CHANNELS    = 16,
     parameter MAX_INPUT_HEIGHT    = 28,
     parameter MAX_INPUT_WIDTH     = 28,
-    parameter TILE_ROWS           = 8,
+    parameter TILE_ROWS           = 4,
     parameter ARRAY_COLS          = 4,
     parameter DATA_WIDTH          = 8,
-    parameter NUM_IMG_PORTS       = 5,
+    parameter NUM_IMG_PORTS       = 3,
     parameter MAX_BURST_LEN       = 256,
     parameter MAX_WEIGHTS         = 30720,
     parameter TOTAL_WEIGHTS       = 44190,
@@ -50,34 +50,40 @@ module lenet5_npu_sram_no_offset #(
     input  logic                               bias_write_enable,
 
     // External SRAM write (image load)
-    input  logic                                       ext_wr_en,
-    input  logic [$clog2(SRAM_TOTAL_ELEMENTS)-1:0]    ext_wr_addr,
-    input  logic signed [DATA_WIDTH-1:0]               ext_wr_data,
+    input  logic                                    ext_wr_en,
+    input  logic [$clog2(SRAM_TOTAL_ELEMENTS)-1:0] ext_wr_addr,
+    input  logic signed [DATA_WIDTH-1:0]            ext_wr_data,
 
-    output logic sram_bank_conflict
+    output logic sram_bank_conflict,
+
+    // FIX: thread NPU compute outputs up to cnn_top so the entire
+    // compute cone is reachable from a primary output and is not
+    // pruned by Vivado's backward cone elimination.
+    output logic                         output_valid,
+    output logic [15:0]                  output_addr,
+    output logic signed [DATA_WIDTH-1:0] output_data
 );
 
     // =========================================================================
     // NPU <-> SRAM signals
-    // FIX 2: addr width = $clog2(SRAM_TOTAL_ELEMENTS), not hardcoded [14:0]
     // =========================================================================
-    logic [9:0] npu_img_addr  [NUM_IMG_PORTS];
-    logic                                    npu_img_req   [NUM_IMG_PORTS];
-    logic signed [DATA_WIDTH-1:0]            npu_img_data  [NUM_IMG_PORTS];
-    logic                                    npu_img_valid [NUM_IMG_PORTS];
+    logic [9:0]                             npu_img_addr  [NUM_IMG_PORTS];
+    logic                                   npu_img_req   [NUM_IMG_PORTS];
+    logic signed [DATA_WIDTH-1:0]           npu_img_data  [NUM_IMG_PORTS];
+    logic                                   npu_img_valid [NUM_IMG_PORTS];
 
-    logic                                    npu_out_valid;
-    logic [15:0]                             npu_out_addr;
-    logic signed [DATA_WIDTH-1:0]            npu_out_data;
+    logic                                   npu_out_valid;
+    logic [15:0]                            npu_out_addr;
+    logic signed [DATA_WIDTH-1:0]           npu_out_data;
 
     logic [$clog2(SRAM_TOTAL_ELEMENTS)-1:0] sram_rd_addr [NUM_IMG_PORTS];
-    logic                                    sram_rd_req  [NUM_IMG_PORTS];
-    logic signed [DATA_WIDTH-1:0]            sram_rd_data [NUM_IMG_PORTS];
-    logic                                    sram_rd_valid[NUM_IMG_PORTS];
+    logic                                   sram_rd_req  [NUM_IMG_PORTS];
+    logic signed [DATA_WIDTH-1:0]           sram_rd_data [NUM_IMG_PORTS];
+    logic                                   sram_rd_valid[NUM_IMG_PORTS];
 
-    logic                                    sram_wr_en;
+    logic                                   sram_wr_en;
     logic [$clog2(SRAM_TOTAL_ELEMENTS)-1:0] sram_wr_addr;
-    logic signed [DATA_WIDTH-1:0]            sram_wr_data;
+    logic signed [DATA_WIDTH-1:0]           sram_wr_data;
 
     // =========================================================================
     // Read port wiring
@@ -93,7 +99,6 @@ module lenet5_npu_sram_no_offset #(
 
     // =========================================================================
     // Write mux: external load has priority over NPU output
-    // FIX 3: bit-select truncation instead of non-standard $clog2(X)'(expr)
     // =========================================================================
     always_comb begin
         if (ext_wr_en) begin
@@ -102,7 +107,6 @@ module lenet5_npu_sram_no_offset #(
             sram_wr_data = ext_wr_data;
         end else if (npu_out_valid) begin
             sram_wr_en   = 1'b1;
-            // FIX 3: portable bit-select truncation
             sram_wr_addr = npu_out_addr[$clog2(SRAM_TOTAL_ELEMENTS)-1:0];
             sram_wr_data = npu_out_data;
         end else begin
@@ -114,8 +118,6 @@ module lenet5_npu_sram_no_offset #(
 
     // =========================================================================
     // NPU
-    // FIX 1: TOTAL_ELEMENTS=SRAM_TOTAL_ELEMENTS — unifies img_sram_addr width
-    //        throughout the entire hierarchy
     // =========================================================================
     lenet5_npu_complete #(
         .MAX_KERNEL_SIZE  (MAX_KERNEL_SIZE),
@@ -132,7 +134,7 @@ module lenet5_npu_sram_no_offset #(
         .TOTAL_WEIGHTS    (TOTAL_WEIGHTS),
         .MAX_BIASES       (MAX_BIASES),
         .TOTAL_BIASES     (TOTAL_BIASES),
-        .TOTAL_ELEMENTS   (SRAM_TOTAL_ELEMENTS)   // FIX 1
+        .TOTAL_ELEMENTS   (SRAM_TOTAL_ELEMENTS)
     ) npu (
         .clk                 (clk),
         .rst                 (rst),
@@ -162,10 +164,18 @@ module lenet5_npu_sram_no_offset #(
         .img_sram_read_req   (npu_img_req),
         .img_sram_data       (npu_img_data),
         .img_sram_valid      (npu_img_valid),
+        // FIX: previously unconnected - now drives output ports
         .output_valid        (npu_out_valid),
         .output_addr         (npu_out_addr),
         .output_data         (npu_out_data)
     );
+
+    // =========================================================================
+    // Drive output ports - cnn_top captures these into the result register
+    // =========================================================================
+    assign output_valid = npu_out_valid;
+    assign output_addr  = npu_out_addr;
+    assign output_data  = npu_out_data;
 
     // =========================================================================
     // SRAM: feature_map_sram_5port
