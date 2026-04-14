@@ -140,3 +140,7 @@ module weight_flatten2_streaming_burst #(
             endcase
         end
     end
+
+    assign done_all = tile_ready && (tile_counter == num_tiles_lat - 1);
+
+endmodule
