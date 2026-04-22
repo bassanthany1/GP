@@ -143,19 +143,6 @@ package systolic_pkg;
       end
     endtask
 
-    // ── apply_reset ────────────────────────────────────────────
-    // Hold reset for 5 cycles, then release. Best practice:
-    // always reset on a known clock edge via clocking block.
-    // task apply_reset();
-    //   vif.cb_drv.rst       <= 1'b1;
-    //   vif.cb_drv.load_data <= 1'b0;
-    //   vif.cb_drv.k_size    <= '0;
-    //   vif.cb_drv.a_flat    <= '0;
-    //   vif.cb_drv.b_flat    <= '0;
-    //   repeat (5) @(vif.cb_drv);  // wait 5 clock edges
-    //   vif.cb_drv.rst <= 1'b0;
-    //   repeat (3) @(vif.cb_drv);  // 3 clean cycles — gives bus time to settle
-    // endtask
 
     task apply_reset();
   vif.cb_drv.rst       <= 1'b1;
@@ -168,67 +155,6 @@ package systolic_pkg;
   repeat (3) @(vif.cb_drv);
 endtask
 
-    // ── drive_item ─────────────────────────────────────────────
-    // This implements the DUT timing contract:
-    //   Cycle 0: drive matrices + k_size, assert load_data
-    //   Cycle 1: deassert load_data, HOLD a_flat/b_flat stable
-    //   ...wait... until valid_out fires
-    //   Then we're done — ready for next item.
-    // task drive_item(systolic_seq_item #(DW,M,K,N) item);
-    //     // Step 1: Drive matrices and assert load_data
-    //     vif.cb_drv.a_flat    <= item.get_a_flat();
-    //     vif.cb_drv.b_flat    <= item.get_b_flat();
-    //     vif.cb_drv.k_size    <= item.k_size;
-    //     vif.cb_drv.load_data <= 1'b1;
-    //     @(vif.cb_drv); // clock edge: DUT latches load_data
-
-    //     // Step 2: Deassert load_data — data must STAY on the bus!
-    //     vif.cb_drv.load_data <= 1'b0;
-
-    //     // Step 3: Hold data stable until DUT asserts valid_out.
-    //     // This is the stability contract the DUT requires.
-    //     // We poll valid_out each clock edge.
-    //     do begin
-    //         @(vif.cb_drv);
-    //     end while (!vif.cb_drv.valid_out);
-
-    //     // Step 4: Transaction done. One idle cycle before next.
-    //     @(vif.cb_drv);
-    //     vif.cb_drv.a_flat <= '0;
-    //     vif.cb_drv.b_flat <= '0;
-
-    //     `uvm_info("DRV", $sformatf("Drove: %s", item.convert2string()), UVM_HIGH)
-    // endtask
-
-    //     task drive_item(systolic_seq_item #(DW,M,K,N) item);
-    //     // Step 0: Drive data FIRST, load_data still low
-    //     // This gives k_size/a_flat/b_flat one full cycle to settle
-    //     // before the monitor sees load_data=1
-    //     vif.cb_drv.a_flat    <= item.get_a_flat();
-    //     vif.cb_drv.b_flat    <= item.get_b_flat();
-    //     vif.cb_drv.k_size    <= item.k_size;
-    //     vif.cb_drv.load_data <= 1'b0;        // ← keep LOW this cycle
-    //     @(vif.cb_drv);                       // ← data settles on the bus
-
-    //     // Step 1: NOW assert load_data — monitor will sample valid k_size
-    //     vif.cb_drv.load_data <= 1'b1;
-    //     @(vif.cb_drv);                       // DUT latches load_data
-
-    //     // Step 2: Deassert — data stays stable
-    //     vif.cb_drv.load_data <= 1'b0;
-
-    //     // Step 3: Wait for valid_out
-    //     do begin
-    //         @(vif.cb_drv);
-    //     end while (!vif.cb_drv.valid_out);
-
-    //     // Step 4: Idle before next
-    //     @(vif.cb_drv);
-    //     vif.cb_drv.a_flat <= '0;
-    //     vif.cb_drv.b_flat <= '0;
-
-    //     `uvm_info("DRV", $sformatf("Drove: %s", item.convert2string()), UVM_HIGH)
-    // endtask
 
 task drive_item(systolic_seq_item#(DW, M, K, N) item);
   // Cycle 0: Drive data, keep load_data LOW — let signals settle
@@ -1201,6 +1127,13 @@ module systolic_tb_top;
   // UVM_NULL_CONTEXT ("") means "available to entire hierarchy".
   // Driver and monitor call get(this, "", "vif", vif) to retrieve it.
   initial begin
+  // Force known state before any clock edge
+  dut_if.rst       = 1'b1;
+  dut_if.load_data = 1'b0;
+  dut_if.k_size    = '0;
+  dut_if.a_flat    = '0;
+  dut_if.b_flat    = '0;
+
     uvm_config_db#(virtual systolic_if #(DW, M, K, N))::set(null, "uvm_test_top.*", "vif", dut_if);
 
     // run_test() launches the UVM phase machinery.
