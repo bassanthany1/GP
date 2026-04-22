@@ -49,6 +49,11 @@ module systolic_tb_top;
   // UVM_NULL_CONTEXT ("") means "available to entire hierarchy".
   // Driver and monitor call get(this, "", "vif", vif) to retrieve it.
   initial begin
+      dut_if.rst       = 1'b1;
+      dut_if.load_data = 1'b0;
+      dut_if.k_size    = '0;
+      dut_if.a_flat    = '0;
+      dut_if.b_flat    = '0;
     uvm_config_db#(virtual systolic_if #(DW, M, K, N))::set(null, "uvm_test_top.*", "vif", dut_if);
 
     // run_test() launches the UVM phase machinery.
