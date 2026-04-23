@@ -6,13 +6,12 @@ module weight_flatten2_streaming_burst #(
     parameter ARRAY_COLS       = 4,
     parameter DATA_WIDTH       = 8,
     parameter MAX_BURST_LEN    = 256,
-    parameter MAX_WEIGHTS      = 30720 
+    parameter MAX_WEIGHTS      = 30720
 )(
     input  logic clk,
     input  logic rst,
     input  logic start,
 
-    // Runtime geometry ? NEW
     input logic [$clog2(MAX_KERNEL_SIZE+1)-1:0]  kernel_size,
     input logic [$clog2(MAX_IN_CHANNELS+1)-1:0]  in_channels,
     input logic [$clog2(MAX_OUT_CHANNELS+1)-1:0] out_channels,
@@ -32,9 +31,8 @@ module weight_flatten2_streaming_burst #(
 );
     localparam MAX_NUM_TILES = (MAX_OUT_CHANNELS + ARRAY_COLS - 1) / ARRAY_COLS;
 
-    // Runtime geometry
-    logic [$clog2(MAX_WIN_SIZE+1)-1:0]   weights_per_filter;
-    logic [$clog2(MAX_NUM_TILES+1)-1:0]  num_tiles;
+    logic [$clog2(MAX_WIN_SIZE+1)-1:0]  weights_per_filter;
+    logic [$clog2(MAX_NUM_TILES+1)-1:0] num_tiles;
 
     always_comb begin
         weights_per_filter = ($clog2(MAX_WIN_SIZE+1))'(kernel_size) *
@@ -43,8 +41,11 @@ module weight_flatten2_streaming_burst #(
         num_tiles          = (out_channels + ARRAY_COLS - 1) / ARRAY_COLS;
     end
 
-    typedef enum logic [2:0] {
-        IDLE, REQUEST_BURST, RECEIVING_BURST, TILE_DONE
+    typedef enum logic [1:0] {
+        IDLE            = 2'd0,
+        REQUEST_BURST   = 2'd1,
+        RECEIVING_BURST = 2'd2,
+        TILE_DONE       = 2'd3
     } state_t;
 
     state_t state;
@@ -53,10 +54,25 @@ module weight_flatten2_streaming_burst #(
     logic [$clog2(ARRAY_COLS+1)-1:0]     current_col;
     logic [$clog2(MAX_WIN_SIZE+1)-1:0]   burst_count;
 
-    // Latched geometry
-    logic [$clog2(MAX_WIN_SIZE+1)-1:0]   weights_per_filter_lat;
+    logic [$clog2(MAX_WIN_SIZE+1)-1:0]     weights_per_filter_lat;
     logic [$clog2(MAX_OUT_CHANNELS+1)-1:0] out_channels_lat;
-    logic [$clog2(MAX_NUM_TILES+1)-1:0]  num_tiles_lat;
+    logic [$clog2(MAX_NUM_TILES+1)-1:0]    num_tiles_lat;
+
+    // FIX: oc_vec and base_addr_vec declared as module-level wires
+    // driven combinationally - avoids 'automatic' inside always_ff
+    logic [$clog2(MAX_OUT_CHANNELS+1)-1:0]              oc_vec;
+    logic [$clog2(MAX_OUT_CHANNELS*MAX_WIN_SIZE)-1:0]   base_addr_vec;
+
+    always_comb begin
+        // FIX: explicit-width cast keeps all bits of out_channels_lat live
+        // preventing bit[0] from being pruned (Warning #40 fix from Doc 4)
+        oc_vec = ($clog2(MAX_OUT_CHANNELS+1))'(tile_counter) *
+                 ($clog2(MAX_OUT_CHANNELS+1))'(ARRAY_COLS)   +
+                 ($clog2(MAX_OUT_CHANNELS+1))'(current_col);
+
+        base_addr_vec = oc_vec *
+                        ($clog2(MAX_OUT_CHANNELS*MAX_WIN_SIZE))'(weights_per_filter_lat);
+    end
 
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
@@ -81,7 +97,6 @@ module weight_flatten2_streaming_burst #(
             case (state)
                 IDLE: begin
                     if (start) begin
-                        // Latch runtime geometry
                         weights_per_filter_lat <= weights_per_filter;
                         out_channels_lat       <= out_channels;
                         num_tiles_lat          <= num_tiles;
@@ -91,17 +106,15 @@ module weight_flatten2_streaming_burst #(
                 end
 
                 REQUEST_BURST: begin
-                    automatic int oc, base_addr;
-                    oc = int'(tile_counter) * ARRAY_COLS + int'(current_col);
-                    if (oc < int'(out_channels_lat)) begin
-                        base_addr      = oc * int'(weights_per_filter_lat);
-                        sram_addr      <= base_addr;
+                    // FIX: oc_vec and base_addr_vec now computed combinationally
+                    // above - just use them directly here, no 'automatic' needed
+                    if (oc_vec < out_channels_lat) begin
+                        sram_addr      <= base_addr_vec;
                         sram_burst_len <= weights_per_filter_lat;
                         sram_read_req  <= 1;
                         burst_count    <= 0;
                         state          <= RECEIVING_BURST;
                     end else begin
-                        // Padding column ? zero fill
                         for (int r = 0; r < MAX_WIN_SIZE; r++)
                             weight_tile[r][current_col] <= 0;
                         if (current_col == ARRAY_COLS - 1)
@@ -143,4 +156,4 @@ module weight_flatten2_streaming_burst #(
 
     assign done_all = tile_ready && (tile_counter == num_tiles_lat - 1);
 
-endmodule
+endmodule 
