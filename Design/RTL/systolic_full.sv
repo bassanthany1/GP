@@ -1,24 +1,26 @@
-// =============================================================================
-// systolic_full - Option A: zero-copy feed
+// systolic_full - FIXED
+// Warnings fixed:
+//   [Synth 8-6014] Unused sequential element row_loop[0].col_loop[3].PE_A_reg[0][3]
+//   [Synth 8-6014] Unused sequential element row_loop[1].col_loop[3].PE_A_reg[1][3]
+//   [Synth 8-6014] Unused sequential element row_loop[2].col_loop[3].PE_A_reg[2][3]
+//   [Synth 8-6014] Unused sequential element row_loop[3].col_loop[3].PE_A_reg[3][3]
+//   [Synth 8-6014] Unused sequential element row_loop[3].col_loop[0].PE_B_reg[3][0]
+//   [Synth 8-6014] Unused sequential element row_loop[3].col_loop[1].PE_B_reg[3][1]
+//   [Synth 8-6014] Unused sequential element row_loop[3].col_loop[2].PE_B_reg[3][2]
+//   [Synth 8-6014] Unused sequential element row_loop[3].col_loop[3].PE_B_reg[3][3]
 //
-// CHANGE LOG vs original:
-//   - Removed A_BUFFER[M][K] and B_BUFFER[K][N] (saves 2×M×K×DW + 2×K×N×DW FFs)
-//     For default params (M=8,K=256,N=8,DW=8): saves 32 Kbit of flip-flops.
-//   - Removed the always_ff copy block that loaded a_full_in?A_BUFFER,
-//     b_full_in?B_BUFFER on load_data.
-//   - Wavefront always_comb now indexes a_flat / b_flat directly using
-//     cycle_cnt-based diagonal offsets. No combinational or registered copy.
-//   - a_full_in / b_full_in unpack wires retained for readability but are now
-//     unused (synthesiser will optimise them away). They can be removed.
-//   - load_data still resets PE_C_REG and arms run_enable - behaviour unchanged.
-//   - All ports, parameters, and external timing contracts unchanged.
-//
-// REQUIREMENT on caller (conv_top_v2_hybrid):
-//   a_flat and b_flat must remain stable (held valid) from the cycle systolic_load
-//   is asserted until systolic_valid fires. The controller already guarantees this
-//   because it stays in COMPUTE state and does not re-assert start_im2col or
-//   start_weight until systolic_valid is seen.
-// =============================================================================
+// Root cause: PE_A[r][N-1] (last column) is written but never forwarded to
+//   a neighbour (there is no column N). Similarly PE_B[M-1][c] (last row)
+//   is written but never forwarded downward.
+// Fix: Gate the PE_A and PE_B register writes so they only occur when
+//   the forwarded value will actually be consumed:
+//     PE_A[r][c] is only needed when c < N-1  (feeds PE_A[r][c+1])
+//     PE_B[r][c] is only needed when r < M-1  (feeds PE_B[r+1][c])
+//   PE_C_REG always updates (accumulates the product).
+//   No functionality change: the forwarded values read by each PE are
+//   a_in = (c==0) ? a_next_in[r] : PE_A[r][c-1]
+//   b_in = (r==0) ? b_next_in[c] : PE_B[r-1][c]
+//   so PE_A[r][N-1] and PE_B[M-1][c] are genuinely dead.
 
 module systolic_full #(
     parameter int DATAWIDTH = 8,
@@ -48,7 +50,6 @@ module systolic_full #(
 
     // =========================================================================
     // Unpack flat inputs into 2D arrays - combinational only, no registers.
-    // These wires are read directly by the wavefront logic every cycle.
     // =========================================================================
     logic signed [DATAWIDTH-1:0] a_in_2d [M-1:0][K-1:0];
     logic signed [DATAWIDTH-1:0] b_in_2d [K-1:0][N-1:0];
@@ -82,8 +83,6 @@ module systolic_full #(
             output_ready <= 1'b0;
 
             if (load_data) begin
-                // Latch geometry and arm the run.
-                // No buffer copy needed - a_flat/b_flat are read directly.
                 k_size_reg       <= k_size;
                 total_cycles_reg <= CNT_WIDTH'(k_size) +
                                     CNT_WIDTH'(M) +
@@ -104,15 +103,7 @@ module systolic_full #(
     end
 
     // =========================================================================
-    // Wavefront feed - reads a_flat / b_flat directly, no intermediate buffer.
-    //
-    // For row i: the diagonal element at cycle t is a_in_2d[i][t-i]
-    //   valid when run_enable && (t >= i) && (t-i < k_size_reg)
-    //
-    // For col j: the diagonal element at cycle t is b_in_2d[t-j][j]
-    //   valid when run_enable && (t >= j) && (t-j < k_size_reg)
-    //
-    // a_flat / b_flat must be held stable by the caller for the entire run.
+    // Wavefront feed - reads a_flat / b_flat directly.
     // =========================================================================
     logic signed [DATAWIDTH-1:0] a_next_in [M-1:0];
     logic signed [DATAWIDTH-1:0] b_next_in [N-1:0];
@@ -137,7 +128,11 @@ module systolic_full #(
     end
 
     // =========================================================================
-    // PE grid - unchanged from original
+    // PE grid
+    // FIX: PE_A[r][c] only registered when c < N-1 (last column never forwarded)
+    //      PE_B[r][c] only registered when r < M-1 (last row never forwarded)
+    //      This removes the dead registers Vivado was warning about.
+    //      PE_C_REG always updated for every PE.
     // =========================================================================
     logic signed [DATAWIDTH-1:0]   PE_A     [M-1:0][N-1:0];
     logic signed [DATAWIDTH-1:0]   PE_B     [M-1:0][N-1:0];
@@ -156,13 +151,15 @@ module systolic_full #(
 
                 always_ff @(posedge clk or posedge rst) begin
                     if (rst || load_data) begin
-                        PE_A[r][c]     <= '0;
-                        PE_B[r][c]     <= '0;
                         PE_C_REG[r][c] <= '0;
+                        // FIX: only reset/write PE_A when it will be forwarded
+                        if (c < N-1) PE_A[r][c] <= '0;
+                        // FIX: only reset/write PE_B when it will be forwarded
+                        if (r < M-1) PE_B[r][c] <= '0;
                     end else if (run_enable) begin
-                        PE_A[r][c]     <= a_in;
-                        PE_B[r][c]     <= b_in;
                         PE_C_REG[r][c] <= PE_C_REG[r][c] + (a_in * b_in);
+                        if (c < N-1) PE_A[r][c] <= a_in;
+                        if (r < M-1) PE_B[r][c] <= b_in;
                     end
                 end
             end
@@ -170,7 +167,7 @@ module systolic_full #(
     endgenerate
 
     // =========================================================================
-    // Output register - unchanged from original
+    // Output register
     // =========================================================================
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
