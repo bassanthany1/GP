@@ -37,9 +37,9 @@ module lenet5_npu_sram_no_offset #(
 
     // Memory configuration
     input  logic [$clog2(TOTAL_WEIGHTS+1)-1:0] weight_layer_offset,
-    input  logic [$clog2(MAX_WEIGHTS+1)-1:0]   weight_layer_total,
+   
     input  logic [$clog2(TOTAL_BIASES+1)-1:0]  bias_layer_offset,
-    input  logic [$clog2(MAX_BIASES+1)-1:0]    bias_layer_total,
+  
 
     // Weight / bias initialization
     input  logic [$clog2(TOTAL_WEIGHTS)-1:0]  weight_write_addr,
@@ -151,9 +151,9 @@ module lenet5_npu_sram_no_offset #(
         .requant_shift       (requant_shift),
         .ZP_next             (ZP_next),
         .weight_layer_offset (weight_layer_offset),
-        .weight_layer_total  (weight_layer_total),
+       
         .bias_layer_offset   (bias_layer_offset),
-        .bias_layer_total    (bias_layer_total),
+       
         .weight_write_addr   (weight_write_addr),
         .weight_write_data   (weight_write_data),
         .weight_write_enable (weight_write_enable),
@@ -164,14 +164,14 @@ module lenet5_npu_sram_no_offset #(
         .img_sram_read_req   (npu_img_req),
         .img_sram_data       (npu_img_data),
         .img_sram_valid      (npu_img_valid),
-        // FIX: previously unconnected - now drives output ports
+        // FIX: previously unconnected ? now drives output ports
         .output_valid        (npu_out_valid),
         .output_addr         (npu_out_addr),
         .output_data         (npu_out_data)
     );
 
     // =========================================================================
-    // Drive output ports - cnn_top captures these into the result register
+    // Drive output ports ? cnn_top captures these into the result register
     // =========================================================================
     assign output_valid = npu_out_valid;
     assign output_addr  = npu_out_addr;
