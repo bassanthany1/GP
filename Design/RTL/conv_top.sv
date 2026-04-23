@@ -5,10 +5,10 @@ module conv_top_v2_hybrid #(
     parameter MAX_OUT_CHANNELS = 120,
     parameter MAX_INPUT_HEIGHT = 28,
     parameter MAX_INPUT_WIDTH  = 28,
-    parameter TILE_ROWS        = 4,
-    parameter ARRAY_COLS       = 4,
+    parameter TILE_ROWS        = 8,
+    parameter ARRAY_COLS       = 8,
     parameter DATA_WIDTH       = 8,
-    parameter NUM_IMG_PORTS    = 3,
+    parameter NUM_IMG_PORTS    = 5,
     parameter MAX_BURST_LEN    = 256,
     parameter TOTAL_ELEMENTS   = 1024
 )(
@@ -174,19 +174,20 @@ module conv_top_v2_hybrid #(
         .clk                    (clk),
         .rst                    (rst),
         .start_conv             (start_conv),
+
         .conv_done              (conv_done),
         .fc_mode                (fc_mode),
         .kernel_size            (kernel_size),
-        .in_channels            (in_channels),
+       
         .out_channels           (out_channels),
         .input_height           (input_height),
         .input_width            (input_width),
         .start_im2col           (start_im2col),
         .im2col_tile_ready      (im2col_tile_ready),
-        .im2col_tile_data       (im2col_tile_data),
+      
         .start_weight           (start_weight),
         .weight_tile_ready      (weight_tile_ready),
-        .weight_tile            (weight_tile),
+      
         .systolic_load          (systolic_load),
         .systolic_valid         (systolic_valid),
         .systolic_out           (systolic_out),
