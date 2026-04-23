@@ -1,7 +1,7 @@
 module cnn_top_synth (
     input  logic        clk,
     input  logic        rst,
-input logic soft_rst,
+    input logic         soft_rst,
     input  logic        uart_rx,
     output logic        uart_tx,
 
