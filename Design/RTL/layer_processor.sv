@@ -34,9 +34,9 @@ module lenet5_layer_processor #(
     input logic signed [7:0] ZP_next,
 
     input logic [$clog2(TOTAL_WEIGHTS+1)-1:0] weight_layer_offset,
-    input logic [$clog2(MAX_WEIGHTS+1)-1:0]   weight_layer_total,
+  
     input logic [$clog2(TOTAL_BIASES+1)-1:0]  bias_layer_offset,
-    input logic [$clog2(MAX_BIASES+1)-1:0]    bias_layer_total,
+  
 
     input logic [$clog2(TOTAL_WEIGHTS)-1:0] weight_write_addr,
     input logic signed [DATA_WIDTH-1:0]     weight_write_data,
@@ -87,7 +87,7 @@ module lenet5_layer_processor #(
         .clk                 (clk),
         .rst                 (rst),
         .layer_offset        (weight_layer_offset),
-        .layer_total_weights (weight_layer_total),
+      
         .write_addr          (weight_write_addr),
         .write_data          (weight_write_data),
         .write_enable        (weight_write_enable),
@@ -111,7 +111,7 @@ module lenet5_layer_processor #(
         .clk                (clk),
         .rst                (rst),
         .layer_offset       (bias_layer_offset),
-        .layer_total_biases (bias_layer_total),
+       
         .write_addr         (bias_write_addr),
         .write_data         (bias_write_data),
         .write_enable       (bias_write_enable),
