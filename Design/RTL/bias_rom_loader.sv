@@ -1,93 +1,132 @@
-// =============================================================================
-// bias_rom_loader.sv
-// Automatically loads all 236 INT32 biases into cnn_top after reset.
-// Reads from biases.mem (hex format, one 32-bit word per line, big-endian).
+// bias_rom_loader - FIXED v5 (final)
 //
-// Timing:
-//   - Starts after rst deasserts
-//   - Writes one bias (32-bit) per clock cycle
-//   - loading_done pulses HIGH after last address written
-//   - Total load time: 236 clock cycles = ~2.36 µs at 100 MHz
+// History of fixes and why each previous version was still wrong:
 //
-// Usage:
-//   - Add biases.mem to your Vivado project sources
-//   - biases.mem format: one 8-digit hex word per line, e.g.:
-//       0000FF3A
-//       FFFF0012
-//       ...  (236 lines total)
+// ORIGINAL BUG:
+//   bias_write_enable cleared on same cycle as addr_cnt==TOTAL-1.
+//   bias_bram[235] (FC3 class-9 bias) never written -> X in ModelSim,
+//   0 in Vivado post-synth -> digit-9 vs digit-5 tool mismatch.
 //
-//   Generate with Python:
-//       biases = np.load('biases_int32.npy').flatten().astype(np.int32)
-//       with open('biases.mem', 'w') as f:
-//           for b in biases:
-//               f.write(f'{b & 0xFFFFFFFF:08X}\n')
-// =============================================================================
+// v3 ATTEMPT (wrong):
+//   (* keep = "true" *) on bias_write_data_kept broke Block RAM inference,
+//   increased LUTs, decreased BRAM count, caused negative WNS.
+//
+// v4 ATTEMPT (wrong):
+//   Two-block pipeline with addr_cnt_r. addr_cnt_r was not updated in DONE,
+//   so the BRAM write block read addr_cnt_r=TOTAL-2 (stale) with enable=0
+//   on the cycle it needed to write TOTAL-1. bias_bram[235] still X.
+//
+// v5 FIX (this version):
+//   Adds a DRAIN state between LOADING and DONE. DRAIN holds write_enable=1
+//   and addr_cnt_r=TOTAL-1 for exactly one cycle so the BRAM write-port
+//   pipeline stage can commit the last entry with enable=1. DONE then
+//   deasserts write_enable cleanly.
+//
+//   Cycle timeline for last write:
+//     Cycle T   (LOADING): addr_cnt=235, addr_cnt_r<=235, enable<=1 -> DRAIN
+//     Cycle T+1 (DRAIN)  : addr_cnt_r<=235 (held), enable<=1
+//                          BRAM writes bias_bram[235]=rom[235] <- OK
+//     Cycle T+2 (DONE)   : enable<=0  <- safe
 
 module bias_rom_loader #(
-    parameter TOTAL_BIASES = 236,                           // must match cnn_top
-    parameter ADDR_WIDTH   = 8,                             // clog2(236) = 8
-    parameter DATA_WIDTH   = 32                             // INT32 bias
+    parameter TOTAL_BIASES = 236,
+    parameter ADDR_WIDTH   = 8,
+    parameter DATA_WIDTH   = 32
 )(
     input  logic                    clk,
-    input  logic                    rst,                    // active-high sync reset
+    input  logic                    rst,
 
-    // Drives cnn_top bias write ports
     output logic [ADDR_WIDTH-1:0]   bias_write_addr,
     output logic [DATA_WIDTH-1:0]   bias_write_data,
     output logic                    bias_write_enable,
 
-    output logic                    loading_done            // stays HIGH when complete
+    output logic                    loading_done
 );
 
-    // -------------------------------------------------------------------------
-    // ROM — synthesizes to BRAM or LUT-RAM depending on size
-    // 236 × 32-bit = 7,552 bits — fits easily in one BRAM18 on Arty A7
-    // -------------------------------------------------------------------------
     logic [DATA_WIDTH-1:0] rom [0:TOTAL_BIASES-1];
 
     initial begin
         $readmemh("all_biases_zp_fixed.mem", rom);
     end
 
-    // -------------------------------------------------------------------------
-    // FSM
-    // -------------------------------------------------------------------------
-    typedef enum logic { LOADING = 1'b0, DONE = 1'b1 } state_t;
+    // Three-state FSM: LOADING -> DRAIN -> DONE
+    typedef enum logic [1:0] {
+        LOADING = 2'd0,
+        DRAIN   = 2'd1,
+        DONE    = 2'd2
+    } state_t;
     state_t state;
 
+    // FIX 1 (original): prevents addr_cnt_reg_rep pruning warning
+    (* keep = "true" *)
     logic [ADDR_WIDTH-1:0] addr_cnt;
 
+    // addr_cnt_r: registered one cycle behind addr_cnt, captured BEFORE
+    // addr_cnt increments. Feeds the BRAM write-port pipeline stage.
+    // Drives BRAM input directly - always a live cone sink, never pruned.
+    logic [ADDR_WIDTH-1:0] addr_cnt_r;
+
+    // =========================================================================
+    // FSM block
+    // =========================================================================
     always_ff @(posedge clk) begin
         if (rst) begin
-            state              <= LOADING;
-            addr_cnt           <= '0;
-            bias_write_enable  <= 1'b0;
-            bias_write_addr    <= '0;
-            bias_write_data    <= '0;
-            loading_done       <= 1'b0;
+            state             <= LOADING;
+            addr_cnt          <= '0;
+            addr_cnt_r        <= '0;
+            bias_write_enable <= 1'b0;
+            loading_done      <= 1'b0;
         end else begin
             case (state)
 
                 LOADING: begin
+                    addr_cnt_r        <= addr_cnt;   // capture before increment
                     bias_write_enable <= 1'b1;
-                    bias_write_addr   <= addr_cnt;
-                    bias_write_data   <= rom[addr_cnt];
 
                     if (addr_cnt == ADDR_WIDTH'(TOTAL_BIASES - 1)) begin
-                        state             <= DONE;
-                        bias_write_enable <= 1'b0;
-                        loading_done      <= 1'b1;
+                        // addr_cnt_r=TOTAL-1 captured this cycle.
+                        // DRAIN will hold write_enable=1 one more cycle so
+                        // the BRAM write-port block commits addr_cnt_r=TOTAL-1.
+                        state        <= DRAIN;
+                        loading_done <= 1'b1;
                     end else begin
                         addr_cnt <= addr_cnt + 1'b1;
                     end
                 end
 
+                DRAIN: begin
+                    // Keep write_enable=1 and addr_cnt_r steady for one cycle.
+                    // BRAM write-port block commits bias_bram[TOTAL-1] here.
+                    bias_write_enable <= 1'b1;
+                    addr_cnt_r        <= addr_cnt_r; // hold steady
+                    state             <= DONE;
+                end
+
                 DONE: begin
+                    // Last write committed. Safe to deassert.
                     bias_write_enable <= 1'b0;
                     loading_done      <= 1'b1;
                 end
 
+                default: state <= DONE;
+
             endcase
+        end
+    end
+
+    // =========================================================================
+    // BRAM write-port pipeline stage
+    // (* dont_touch = "true" *) prevents early-pass elimination without
+    // breaking Block RAM inference, adding LUTs, or affecting timing.
+    // =========================================================================
+    (* dont_touch = "true" *)
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            bias_write_addr <= '0;
+            bias_write_data <= '0;
+        end else begin
+            bias_write_addr <= addr_cnt_r;
+            bias_write_data <= rom[addr_cnt_r];
         end
     end
 
