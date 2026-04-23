@@ -1,27 +1,27 @@
 // =============================================================================
-// uart_image_loader.sv  —  FIXED & PRODUCTION-READY
+// uart_image_loader.sv  â€”  FIXED & PRODUCTION-READY
 //
 // Fixes applied vs previous version:
-//   FIX 2 — Multi-shot: after each inference result is sent back, the loader
-//            automatically returns to IMG_WAIT — host can send next image
+//   FIX 2 â€” Multi-shot: after each inference result is sent back, the loader
+//            automatically returns to IMG_WAIT â€” host can send next image
 //            immediately with no reset needed
-//   FIX 4 — Watchdog timeout: if UART goes silent for TIMEOUT_CYCLES clocks
+//   FIX 4 â€” Watchdog timeout: if UART goes silent for TIMEOUT_CYCLES clocks
 //            mid-transfer, npu_error pulses HIGH for 1 cycle and the loader
 //            resets itself cleanly back to IMG_WAIT
-//   FIX 5 — result_valid_in / predicted_digit_in are now INPUTS — this module
+//   FIX 5 â€” result_valid_in / predicted_digit_in are now INPUTS â€” this module
 //            only READS the result to transmit it back; it never drives those
 //            signals, eliminating the multiple-driver conflict
 //
 // Normal operating sequence (repeatable, no reset needed between images):
 //   1. Host waits for npu_ready HIGH  (asserted by cnn_top_synth)
-//   2. Host sends exactly 784 bytes over UART (28×28, INT8, row-major)
-//   3. image_loaded pulses HIGH 1 cycle → NPU starts inference
-//   4. NPU finishes → result_valid_in goes HIGH (latched in cnn_top_synth)
-//   5. UART TX sends back 1 byte: 0x00–0x09 = predicted digit
-//   6. tx_done fires → loader returns to IMG_WAIT → ready for next image
+//   2. Host sends exactly 784 bytes over UART (28Ã—28, INT8, row-major)
+//   3. image_loaded pulses HIGH 1 cycle â†’ NPU starts inference
+//   4. NPU finishes â†’ result_valid_in goes HIGH (latched in cnn_top_synth)
+//   5. UART TX sends back 1 byte: 0x00â€“0x09 = predicted digit
+//   6. tx_done fires â†’ loader returns to IMG_WAIT â†’ ready for next image
 //
 // UART settings: 115200 baud, 8 data bits, no parity, 1 stop bit (8N1)
-// Target clock : 100 MHz  →  CLKS_PER_BIT = 868
+// Target clock : 100 MHz  â†’  CLKS_PER_BIT = 868
 // =============================================================================
 
 module uart_image_loader #(
@@ -37,15 +37,15 @@ module uart_image_loader #(
     input  logic                   clk,
     input  logic                   rst,         // active-high synchronous
 
-    // ── UART physical pins ──────────────────────────────────────────────────
+    // â”€â”€ UART physical pins â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     input  logic                   uart_rx,     // Arty A7 pin D10
     output logic                   uart_tx,     // Arty A7 pin A9
 
-    // ── Handshake ───────────────────────────────────────────────────────────
+    // â”€â”€ Handshake â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Do not accept an image until both ROM loaders have finished
     input  logic                   ready,       // = w_done & b_done
 
-    // ── Image write port → cnn_top ──────────────────────────────────────────
+    // â”€â”€ Image write port â†’ cnn_top â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     output logic                   ext_wr_en,
     output logic [ADDR_WIDTH-1:0]  ext_wr_addr,
     output logic [DATA_WIDTH-1:0]  ext_wr_data,
@@ -54,10 +54,10 @@ module uart_image_loader #(
     // Connect directly to cnn_top.start in the wrapper
     output logic                   image_loaded,
 
-    // FIX 4 — error flag: pulses HIGH 1 cycle on watchdog timeout
+    // FIX 4 â€” error flag: pulses HIGH 1 cycle on watchdog timeout
     output logic                   npu_error,
 
-    // FIX 5 — result signals come IN from cnn_top (never driven by this module)
+    // FIX 5 â€” result signals come IN from cnn_top (never driven by this module)
     input  logic                   result_valid_in,
     input  logic [3:0]             predicted_digit_in
 );
@@ -68,7 +68,7 @@ module uart_image_loader #(
     localparam int CLKS_PER_BIT = CLK_FREQ / BAUD_RATE;    // 868
 
     // =========================================================================
-    // ── UART RX ──────────────────────────────────────────────────────────────
+    // â”€â”€ UART RX â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Standard 8N1 receiver with 2-stage metastability synchronizer
     // Outputs: rx_valid (1-cycle pulse) + rx_byte
     // =========================================================================
@@ -151,7 +151,7 @@ module uart_image_loader #(
                             rx_valid <= 1'b1;
                             rx_byte  <= rx_shift;
                         end
-                        // Stop bit = 0 → framing error: byte silently dropped
+                        // Stop bit = 0 â†’ framing error: byte silently dropped
                         // Watchdog in image FSM will catch the resulting stall
                     end else begin
                         rx_clk_cnt <= rx_clk_cnt - 1'b1;
@@ -163,13 +163,13 @@ module uart_image_loader #(
     end
 
     // =========================================================================
-    // ── Image Write FSM ───────────────────────────────────────────────────────
-    // FIX 2: loops back to IMG_WAIT after TX completes — multi-shot
+    // â”€â”€ Image Write FSM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // FIX 2: loops back to IMG_WAIT after TX completes â€” multi-shot
     // FIX 4: watchdog resets loader if UART stalls mid-transfer
     // =========================================================================
 
     typedef enum logic [1:0] {
-        IMG_WAIT    = 2'd0,     // idle — waiting for ready + first UART byte
+        IMG_WAIT    = 2'd0,     // idle â€” waiting for ready + first UART byte
         IMG_RECEIVE = 2'd1,     // actively writing pixels to SRAM
         IMG_DONE    = 2'd2      // all pixels written, inference running, TX pending
     } img_state_t;
@@ -189,14 +189,14 @@ module uart_image_loader #(
             npu_error    <= 1'b0;
             watchdog_cnt <= '0;
         end else begin
-            // Safe defaults — only overridden when needed
+            // Safe defaults â€” only overridden when needed
             ext_wr_en    <= 1'b0;
             image_loaded <= 1'b0;
             npu_error    <= 1'b0;
 
             case (img_state)
 
-                // ── Idle: wait for NPU ready and first incoming byte ──────
+                // â”€â”€ Idle: wait for NPU ready and first incoming byte â”€â”€â”€â”€â”€â”€
                 IMG_WAIT: begin
                     watchdog_cnt <= '0;
                     pixel_cnt    <= '0;
@@ -210,17 +210,17 @@ module uart_image_loader #(
                     end
                 end
 
-                // ── Collect pixels 1..783 ────────────────────────────────
+                // â”€â”€ Collect pixels 1..783 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 IMG_RECEIVE: begin
                     if (rx_valid) begin
-                        // New byte arrived — reset watchdog and write to SRAM
+                        // New byte arrived â€” reset watchdog and write to SRAM
                         watchdog_cnt <= '0;
                         ext_wr_en    <= 1'b1;
                         ext_wr_addr  <= pixel_cnt;
                         ext_wr_data  <= rx_byte;
 
                         if (pixel_cnt == 10'(IMAGE_PIXELS - 1)) begin
-                            // Last pixel — trigger inference
+                            // Last pixel â€” trigger inference
                             image_loaded <= 1'b1;
                             img_state    <= IMG_DONE;
                         end else begin
@@ -228,7 +228,7 @@ module uart_image_loader #(
                         end
 
                     end else begin
-                        // No byte yet — tick watchdog
+                        // No byte yet â€” tick watchdog
                         // FIX 4: fire error and self-reset on timeout
                         if (watchdog_cnt == 24'(TIMEOUT_CYCLES - 1)) begin
                             npu_error    <= 1'b1;   // 1-cycle error pulse
@@ -241,12 +241,12 @@ module uart_image_loader #(
                     end
                 end
 
-                // ── Inference in progress — wait for TX FSM to send result ─
+                // â”€â”€ Inference in progress â€” wait for TX FSM to send result â”€
                 // FIX 2: tx_done brings us back here for next image
                 IMG_DONE: begin
                     watchdog_cnt <= '0;
                     if (tx_done) begin
-                        img_state <= IMG_WAIT;      // FIX 2: loop back — no reset needed
+                        img_state <= IMG_WAIT;      // FIX 2: loop back â€” no reset needed
                     end
                 end
 
@@ -255,10 +255,10 @@ module uart_image_loader #(
     end
 
     // =========================================================================
-    // ── UART TX ───────────────────────────────────────────────────────────────
-    // Sends predicted_digit_in back to host as a single byte (0x00–0x09)
+    // â”€â”€ UART TX â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Sends predicted_digit_in back to host as a single byte (0x00â€“0x09)
     // Triggered when result_valid_in is HIGH and we are in IMG_DONE state
-    // FIX 5: only READS predicted_digit_in — never drives it
+    // FIX 5: only READS predicted_digit_in â€” never drives it
     // =========================================================================
 
     typedef enum logic [1:0] {
