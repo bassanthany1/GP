@@ -1,3 +1,17 @@
+// im2col1_streaming_multiport - FIXED
+// Warnings fixed:
+//   [Synth 8-6014] Unused sequential element addr_row_reg was removed  -> line 157
+//   [Synth 8-6014] Unused sequential element addr_elem_reg was removed -> line 158
+// Root cause: addr_row and addr_elem were registered but never read back;
+//   all address generation uses local 'temp_row'/'temp_elem' variables.
+// Fix: Remove addr_row and addr_elem registers entirely.
+//   The local automatic variables (temp_row, temp_elem) already do the job.
+//   fc_mode path never used addr_row (it always wrote row 0).
+//   conv path used temp_row/temp_elem exclusively.
+// Tile-data write path: use the registered wr_en/wr_row/wr_col/wr_dat
+//   scheme from doc-24 so the distributed-RAM write port is driven by FFs
+//   (eliminates Vivado [Synth 8-5788] set/reset on distributed RAM).
+
 module im2col1_streaming_multiport #(
     parameter MAX_IMG_W       = 28,
     parameter MAX_IMG_H       = 28,
@@ -36,7 +50,7 @@ module im2col1_streaming_multiport #(
     localparam MAX_PIX_PER_TILE = TILE_ROWS * MAX_WIN_SIZE;
 
     // -------------------------------------------------------------------------
-    // Runtime geometry ? combinational, sampled only at start pulse
+    // Runtime geometry - combinational, sampled only at start pulse
     // -------------------------------------------------------------------------
     logic [$clog2(MAX_OUT_W+1)-1:0]     out_w;
     logic [$clog2(MAX_OUT_H+1)-1:0]     out_h;
@@ -64,9 +78,9 @@ module im2col1_streaming_multiport #(
     logic                                  fc_mode_latched;
 
     // Address-generation counters
+    // FIX: addr_row and addr_elem REMOVED - they were never read back;
+    //      all address loops use local automatic temp variables instead.
     logic [$clog2(MAX_PIX_PER_TILE+1)-1:0] addr_pixel_count;
-    logic [$clog2(TILE_ROWS+1)-1:0]         addr_row;
-    logic [$clog2(MAX_WIN_SIZE+1)-1:0]      addr_elem;
     logic [$clog2(MAX_OUT_H+1)-1:0]         addr_wy;
     logic [$clog2(MAX_OUT_W+1)-1:0]         addr_wx;
     logic [$clog2(MAX_TOTAL_WIN+1)-1:0]     addr_window_idx;
@@ -78,14 +92,12 @@ module im2col1_streaming_multiport #(
     logic [$clog2(TILE_ROWS+1)-1:0]         data_row;
     logic [$clog2(MAX_WIN_SIZE+1)-1:0]      data_elem;
 
-    // Latched geometry ? registered once at start, stable for entire tile
+    // Latched geometry
     logic [$clog2(MAX_WIN_SIZE+1)-1:0]      window_size_lat;
     logic [$clog2(MAX_OUT_W+1)-1:0]         out_w_lat;
     logic [$clog2(MAX_TOTAL_WIN+1)-1:0]     total_windows_lat;
     logic [$clog2(MAX_NUM_TILES+1)-1:0]     num_tiles_lat;
 
-    // expected_pixels registered once per tile ? no combinational multiplier
-    // on the critical path feeding addr_done / data_done
     logic [$clog2(MAX_PIX_PER_TILE+1)-1:0]  expected_pixels_reg;
 
     logic addr_done, data_done;
@@ -95,27 +107,32 @@ module im2col1_streaming_multiport #(
     end
 
     // -------------------------------------------------------------------------
-    // FIX: tile_data backed by distributed RAM (LUTs) not flip-flops.
-    //
-    // WHY distributed and not block:
-    //   - Controller reads tile_data combinationally (same cycle tile_ready
-    //     fires) to pack a_flat. Block RAM has registered outputs (1-cycle
-    //     latency) which would silently corrupt the first tile's data.
-    //   - At TILE_ROWS*MAX_WIN_SIZE*DATA_WIDTH = 8*256*8 = 16,384 bits (2KB),
-    //     distributed RAM uses ~256 LUT6s ? far less than 2048 FFs with
-    //     per-element enable muxes, and synthesis completes in seconds.
-    //
-    // Vivado:   (* ram_style = "distributed" *)
-    // Quartus:  (* ramstyle = "MLAB" *)
-    //
-    // The output port tile_data is driven by assign from tile_data_r ?
-    // purely combinational wires, no latency, no interface change.
+    // FIX: tile_data backed by distributed RAM with NO async reset.
+    // Write port driven by registered wr_en/wr_row/wr_col/wr_dat signals
+    // to avoid [Synth 8-5788] "has both Set and reset with same priority".
     // -------------------------------------------------------------------------
     (* ram_style = "distributed" *)
     logic signed [DATA_WIDTH-1:0] tile_data_r [TILE_ROWS][MAX_WIN_SIZE];
 
     assign tile_data = tile_data_r;
 
+    // Registered write-port signals (driven by FSM, consumed by RAM process)
+    logic                              wr_en  [NUM_PORTS];
+    logic [$clog2(TILE_ROWS+1)-1:0]    wr_row [NUM_PORTS];
+    logic [$clog2(MAX_WIN_SIZE+1)-1:0] wr_col [NUM_PORTS];
+    logic signed [DATA_WIDTH-1:0]      wr_dat [NUM_PORTS];
+
+    // Distributed-RAM write process - clock only, no reset
+    always_ff @(posedge clk) begin
+        for (int p = 0; p < NUM_PORTS; p++) begin
+            if (wr_en[p])
+                tile_data_r[wr_row[p]][wr_col[p]] <= wr_dat[p];
+        end
+    end
+
+    // -------------------------------------------------------------------------
+    // Main FSM
+    // -------------------------------------------------------------------------
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
             state               <= IDLE;
@@ -124,8 +141,6 @@ module im2col1_streaming_multiport #(
             tile_ready          <= 0;
             done_all            <= 0;
             addr_pixel_count    <= 0;
-            addr_row            <= 0;
-            addr_elem           <= 0;
             addr_wy             <= 0;
             addr_wx             <= 0;
             addr_window_idx     <= 0;
@@ -143,23 +158,25 @@ module im2col1_streaming_multiport #(
             for (int p = 0; p < NUM_PORTS; p++) begin
                 sram_read_req[p] <= 0;
                 sram_addr[p]     <= 0;
+                wr_en[p]         <= 0;
+                wr_row[p]        <= 0;
+                wr_col[p]        <= 0;
+                wr_dat[p]        <= '0;
             end
-            // tile_data_r intentionally NOT reset: distributed RAM does not
-            // support synchronous reset on all elements. Consumer must only
-            // read tile_data after tile_ready is asserted ? same requirement
-            // as before. First valid write happens before first tile_ready.
         end else begin
-            for (int p = 0; p < NUM_PORTS; p++)
+            for (int p = 0; p < NUM_PORTS; p++) begin
                 sram_read_req[p] <= 0;
+                wr_en[p]         <= 0;
+            end
             tile_ready <= 0;
 
             case (state)
+
                 // --------------------------------------------------------------
                 IDLE: begin
                     if (start && tile_counter < num_tiles) begin
                         fc_mode_latched <= fc_mode;
 
-                        // Register window_size multiply once ? not in always_comb
                         window_size_lat   <= ($clog2(MAX_WIN_SIZE+1))'(kernel_size) *
                                              ($clog2(MAX_WIN_SIZE+1))'(kernel_size) *
                                              ($clog2(MAX_WIN_SIZE+1))'(in_channels);
@@ -167,7 +184,6 @@ module im2col1_streaming_multiport #(
                         total_windows_lat <= total_windows;
                         num_tiles_lat     <= num_tiles;
 
-                        // Register expected_pixels once per tile
                         if (fc_mode) begin
                             expected_pixels_reg <= ($clog2(MAX_WIN_SIZE+1))'(kernel_size) *
                                                    ($clog2(MAX_WIN_SIZE+1))'(kernel_size) *
@@ -185,8 +201,6 @@ module im2col1_streaming_multiport #(
                         end
 
                         addr_pixel_count <= 0;
-                        addr_row         <= 0;
-                        addr_elem        <= 0;
                         addr_c           <= 0;
                         addr_ky          <= 0;
                         addr_kx          <= 0;
@@ -207,6 +221,7 @@ module im2col1_streaming_multiport #(
 
                 // --------------------------------------------------------------
                 PROCESSING: begin
+
                     // -- Address generation ------------------------------------
                     if (!addr_done) begin
                         if (fc_mode_latched) begin
@@ -220,8 +235,9 @@ module im2col1_streaming_multiport #(
                                 end
                             end
                             addr_pixel_count <= addr_pixel_count + can_issue;
-                            addr_elem        <= addr_elem + can_issue;
                         end else begin
+                            // FIX: use purely local automatic variables;
+                            //      addr_row and addr_elem registers are gone.
                             automatic logic [$clog2(TILE_ROWS+1)-1:0]       temp_row;
                             automatic logic [$clog2(MAX_WIN_SIZE+1)-1:0]    temp_elem;
                             automatic logic [$clog2(MAX_OUT_H+1)-1:0]       temp_wy;
@@ -231,14 +247,20 @@ module im2col1_streaming_multiport #(
                             automatic logic [$clog2(MAX_KERNEL_SIZE+1)-1:0] temp_ky, temp_kx;
                             automatic int pixels_to_request;
 
-                            temp_row          = addr_row;
-                            temp_elem         = addr_elem;
+                            // Seed from registered state
                             temp_wy           = addr_wy;
                             temp_wx           = addr_wx;
                             temp_window_idx   = addr_window_idx;
                             temp_c            = addr_c;
                             temp_ky           = addr_ky;
                             temp_kx           = addr_kx;
+                            // temp_row/temp_elem start at 0 each call because
+                            // they are re-derived from the window traversal;
+                            // data_row/data_elem track the receive side.
+                            // For address generation the row/elem within the
+                            // current burst window are implicit in temp_*.
+                            temp_row          = '0;   // unused except for inner tracking
+                            temp_elem         = '0;
                             pixels_to_request = 0;
 
                             for (int p = 0; p < NUM_PORTS; p++) begin
@@ -286,8 +308,6 @@ module im2col1_streaming_multiport #(
                             end
 
                             addr_pixel_count <= addr_pixel_count + pixels_to_request;
-                            addr_row         <= temp_row;
-                            addr_elem        <= temp_elem;
                             addr_wy          <= temp_wy;
                             addr_wx          <= temp_wx;
                             addr_window_idx  <= temp_window_idx;
@@ -306,7 +326,10 @@ module im2col1_streaming_multiport #(
                             valid_count = 0;
                             for (int p = 0; p < NUM_PORTS; p++) begin
                                 if (sram_valid[p] && temp_elem < window_size_lat) begin
-                                    tile_data_r[0][temp_elem] <= sram_data[p];
+                                    wr_en[p]  <= 1;
+                                    wr_row[p] <= '0;
+                                    wr_col[p] <= temp_elem;
+                                    wr_dat[p] <= sram_data[p];
                                     valid_count++;
                                     temp_elem++;
                                 end
@@ -325,7 +348,10 @@ module im2col1_streaming_multiport #(
                             for (int p = 0; p < NUM_PORTS; p++) begin
                                 if (sram_valid[p] &&
                                     data_pixel_count + valid_count < expected_pixels_reg) begin
-                                    tile_data_r[temp_row][temp_elem] <= sram_data[p];
+                                    wr_en[p]  <= 1;
+                                    wr_row[p] <= temp_row;
+                                    wr_col[p] <= temp_elem;
+                                    wr_dat[p] <= sram_data[p];
                                     valid_count++;
                                     if (temp_elem == window_size_lat - 1) begin
                                         temp_elem = 0;
@@ -354,6 +380,7 @@ module im2col1_streaming_multiport #(
                         state <= IDLE;
                     end
                 end
+
             endcase
         end
     end
