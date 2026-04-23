@@ -33,9 +33,9 @@ module lenet5_npu_complete #(
     input logic signed [7:0] ZP_next,
 
     input logic [$clog2(TOTAL_WEIGHTS+1)-1:0] weight_layer_offset,
-    input logic [$clog2(MAX_WEIGHTS+1)-1:0]   weight_layer_total,
+
     input logic [$clog2(TOTAL_BIASES+1)-1:0]  bias_layer_offset,
-    input logic [$clog2(MAX_BIASES+1)-1:0]    bias_layer_total,
+   
 
     input logic [$clog2(TOTAL_WEIGHTS)-1:0] weight_write_addr,
     input logic signed [DATA_WIDTH-1:0]     weight_write_data,
@@ -154,9 +154,9 @@ module lenet5_npu_complete #(
         .requant_shift          (requant_shift),
         .ZP_next                (ZP_next),
         .weight_layer_offset    (weight_layer_offset),
-        .weight_layer_total     (weight_layer_total),
+    
         .bias_layer_offset      (bias_layer_offset),
-        .bias_layer_total       (bias_layer_total),
+       
         .weight_write_addr      (weight_write_addr),
         .weight_write_data      (weight_write_data),
         .weight_write_enable    (weight_write_enable),
@@ -187,7 +187,7 @@ module lenet5_npu_complete #(
     logic [$clog2(MAX_OUT_CHANNELS+1)-1:0] out_channels_wr;
     logic [$clog2(MAX_CHANNEL_SZ+1)-1:0]   channel_size_wr;
 
-    always_ff @(posedge clk or posedge rst) begin
+    always_ff @(posedge clk or posedge rst ) begin
         if (rst) begin
             wr_state        <= WR_IDLE;
             wr_row          <= '0;
