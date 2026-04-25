@@ -7,14 +7,14 @@
 //
 // All layer config signals are hardwired constants - no ROM needed.
 // =============================================================================
-
 module fc3_controller (
     input  logic clk,
     input  logic rst,
-    input  logic layer_done,         // from lenet5_npu_complete
+    input  logic start_btn,          // NEW: debounced active-high pulse
+    input  logic layer_done,
 
-    output logic start_layer,        // to lenet5_npu_complete
-    output logic done_led            // lights up when inference is complete
+    output logic start_layer,
+    output logic done_led
 );
     typedef enum logic [1:0] {
         S_IDLE  = 2'd0,
@@ -31,27 +31,25 @@ module fc3_controller (
             start_layer <= 1'b0;
             done_led    <= 1'b0;
         end else begin
-            start_layer <= 1'b0;   // default: deasserted
+            start_layer <= 1'b0;
 
             case (state)
-                // Wait 1 cycle after reset to let everything settle
+                // CHANGED: now waits for button press instead of auto-advancing
                 S_IDLE: begin
-                    state <= S_START;
+                    if (start_btn)
+                        state <= S_START;
                 end
 
-                // Fire start_layer for exactly 1 clock cycle
                 S_START: begin
                     start_layer <= 1'b1;
                     state       <= S_WAIT;
                 end
 
-                // Wait for layer_done from npu_complete
                 S_WAIT: begin
                     if (layer_done)
                         state <= S_DONE;
                 end
 
-                // Inference finished - light LED, stay here forever
                 S_DONE: begin
                     done_led <= 1'b1;
                 end
