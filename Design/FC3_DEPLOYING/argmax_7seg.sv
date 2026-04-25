@@ -1,4 +1,3 @@
-/*// =============================================================================
 // argmax_7seg.sv
 //
 // Watches the output stream from lenet5_npu_complete.
@@ -11,7 +10,7 @@
 //
 // Segments bit order: 6=g 5=f 4=e 3=d 2=c 1=b 0=a
 //   (standard  seg[6:0] = {g,f,e,d,c,b,a})
-//
+
 //       aaa
 //      f   b
 //      f   b
@@ -20,18 +19,15 @@
 //      e   c
 //       ddd
 // =============================================================================
-
+/*
             best_val     <= 8'sh80;   // = -128: most-negative signed INT8
             best_idx     <= 4'd0;
             display_digit <= 4'd15;   // was 4'd0 → now shows blank on reset
-
-
+*/
 //   1. display_digit resets to 4'd15 (blank) instead of 4'd0.
 //      This prevents "0" from appearing on the display during reset.
 //      On reset the display is blank; after inference completes the
 //      correct predicted digit appears and stays.
-// =============================================================================
-
 // =============================================================================
 // argmax_7seg.sv  (FIXED for parameterized NUM_CLASSES)
 //
